@@ -690,7 +690,7 @@ procdump(void)
   }
 }
 
-void
+int
 collect_process_info(struct sysinfo *info)
 {
   info->process_count = 0;
@@ -713,5 +713,6 @@ collect_process_info(struct sysinfo *info)
     release(&p->lock);
   }
   release(&wait_lock);
+  return 0;
 }
 
