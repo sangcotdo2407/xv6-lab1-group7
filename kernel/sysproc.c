@@ -91,3 +91,23 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+static struct sysinfo kinfo;
+static struct sleeplock kinfo_lock = { .lk = { .name = "sysinfo" }, .name = "sysinfo" };
+ 
+uint64
+sys_sysinfo(void)
+{
+  uint64 uaddr;      // dia chi ao cua struct sysinfo trong user
+  int ret = 0;
+ 
+  argaddr(0, &uaddr);  // xv6-labs-2023: argaddr tra void; ban cu: if(argaddr(0,&uaddr)<0) return -1;
+ 
+  acquiresleep(&kinfo_lock);
+  memset(&kinfo, 0, sizeof(kinfo));      // khong ro ri du lieu cu giua cac lan goi
+  collect_file_info(&kinfo);             
+  collect_process_info(&kinfo);          
+  if(copyout(myproc()->pagetable, uaddr, (char *)&kinfo, sizeof(kinfo)) < 0)
+    ret = -1;
+  releasesleep(&kinfo_lock);
+  return ret;
+}
