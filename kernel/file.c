@@ -1,6 +1,5 @@
-
-// 
-// Các hàm hỗ trợ cho những lời gọi hệ thống liên quan đến file descriptor.
+//
+// Support functions for system calls that involve file descriptors.
 //
 
 #include "types.h"
@@ -13,9 +12,6 @@
 #include "file.h"
 #include "stat.h"
 #include "proc.h"
-#include "sysinfo.h"
-
-extern struct proc proc[NPROC];   // Bảng quản lý tiến trình, được định nghĩa trong proc.c
 
 struct devsw devsw[NDEV];
 struct {
@@ -29,7 +25,7 @@ fileinit(void)
   initlock(&ftable.lock, "ftable");
 }
 
-// Cấp phát một cấu trúc file mới.
+// Allocate a file structure.
 struct file*
 filealloc(void)
 {
@@ -47,7 +43,7 @@ filealloc(void)
   return 0;
 }
 
-// Tăng bộ đếm tham chiếu (ref) của file f lên 1.
+// Increment ref count for file f.
 struct file*
 filedup(struct file *f)
 {
@@ -59,7 +55,7 @@ filedup(struct file *f)
   return f;
 }
 
-// Đóng file f (giảm bộ đếm tham chiếu, giải phóng file khi ref bằng 0).
+// Close file f.  (Decrement ref count, close when reaches 0.)
 void
 fileclose(struct file *f)
 {
@@ -86,8 +82,8 @@ fileclose(struct file *f)
   }
 }
 
-// Lấy thông tin metadata của file f.
-// addr là địa chỉ ảo trong không gian người dùng, trỏ đến một cấu trúc struct stat.
+// Get metadata about file f.
+// addr is a user virtual address, pointing to a struct stat.
 int
 filestat(struct file *f, uint64 addr)
 {
@@ -105,8 +101,8 @@ filestat(struct file *f, uint64 addr)
   return -1;
 }
 
-// Đọc dữ liệu từ file f.
-// addr là địa chỉ ảo trong không gian người dùng.
+// Read from file f.
+// addr is a user virtual address.
 int
 fileread(struct file *f, uint64 addr, int n)
 {
@@ -133,8 +129,8 @@ fileread(struct file *f, uint64 addr, int n)
   return r;
 }
 
-// Ghi dữ liệu vào file f.
-// addr là địa chỉ ảo trong không gian người dùng.
+// Write to file f.
+// addr is a user virtual address.
 int
 filewrite(struct file *f, uint64 addr, int n)
 {
@@ -150,11 +146,12 @@ filewrite(struct file *f, uint64 addr, int n)
       return -1;
     ret = devsw[f->major].write(1, addr, n);
   } else if(f->type == FD_INODE){
-    // Ghi từng nhóm block để tránh vượt quá kích thước giao dịch log tối đa,
-    // bao gồm i-node, block gián tiếp, các block cấp phát
-    // và 2 block dự phòng cho những lần ghi không căn chỉnh.
-    // Phần xử lý này thực ra nên được đặt ở tầng thấp hơn,
-    // vì writei() cũng có thể đang ghi vào một thiết bị như console.
+    // write a few blocks at a time to avoid exceeding
+    // the maximum log transaction size, including
+    // i-node, indirect block, allocation blocks,
+    // and 2 blocks of slop for non-aligned writes.
+    // this really belongs lower down, since writei()
+    // might be writing a device like the console.
     int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
     int i = 0;
     while(i < n){
@@ -170,7 +167,7 @@ filewrite(struct file *f, uint64 addr, int n)
       end_op();
 
       if(r != n1){
-        // Có lỗi xảy ra trong writei().
+        // error from writei
         break;
       }
       i += r;
@@ -183,87 +180,3 @@ filewrite(struct file *f, uint64 addr, int n)
   return ret;
 }
 
-
-// Thu thập thông tin của tất cả đối tượng file đang mở (ftable.file[i].ref > 0),
-// lưu số lượng vào info->open_file_count và thông tin chi tiết vào info->files[].
-// Đồng thời thu thập danh sách các PID khác nhau đang tham chiếu đến mỗi đối tượng
-// thông qua một vị trí bất kỳ trong mảng ofile[].
-//
-// info được cung cấp bởi sys_sysinfo() và không bị thay đổi ở nơi khác.
-// Biến này không được đặt trên kernel stack.
-// Chỉ phần thông tin về file của *info được ghi.
-//
-// Cơ chế khóa: không bao giờ giữ đồng thời khóa ftable và khóa của một tiến trình.
-//   Giai đoạn 1: giữ ftable.lock, sao chép thông tin các đối tượng file, sau đó nhả khóa.
-//   Giai đoạn 2: với mỗi tiến trình không ở trạng thái UNUSED, chỉ giữ p->lock
-//                và duyệt qua mảng p->ofile[].
-//
-// Snapshot không hoàn toàn đồng bộ tại một thời điểm:
-// một file được mở hoặc đóng giữa hai giai đoạn có thể bị bỏ sót,
-// hoặc danh sách PID có thể không khớp với giá trị ref.
-//
-// Trả về 0 nếu thành công, -1 nếu thất bại.
-int
-collect_file_info(struct sysinfo *info)
-{
-  int slot_of[NFILE];   // Ánh xạ chỉ số trong ftable sang vị trí trong info->files[], hoặc -1
-  int i, n;
-  struct proc *p;
-
-  if(info == 0)
-    return -1;
-
-  info->open_file_count = 0;
-  memset(info->files, 0, sizeof(info->files));
-  for(i = 0; i < NFILE; i++)
-    slot_of[i] = -1;
-
-  // Giai đoạn 1: chụp trạng thái các đối tượng file.
-  n = 0;
-  acquire(&ftable.lock);
-  for(i = 0; i < NFILE; i++){
-    struct file *f = &ftable.file[i];
-    if(f->ref <= 0)
-      continue;
-    struct sysinfo_file *sf = &info->files[n];
-    sf->file_index = i;
-    sf->type = f->type;
-    sf->readable = f->readable;
-    sf->writable = f->writable;
-    sf->ref = f->ref;
-    sf->process_count = 0;
-    slot_of[i] = n;
-    n++;
-  }
-  release(&ftable.lock);
-  info->open_file_count = n;
-
-  // Giai đoạn 2: thu thập các PID khác nhau đang tham chiếu đến từng đối tượng file.
-  for(p = proc; p < &proc[NPROC]; p++){
-    acquire(&p->lock);
-    if(p->state == UNUSED){
-      release(&p->lock);
-      continue;
-    }
-    int pid = p->pid;
-    for(i = 0; i < NOFILE; i++){
-      struct file *f = p->ofile[i];
-      if(f < ftable.file || f >= ftable.file + NFILE)
-        continue;                       // Con trỏ null hoặc không thuộc bảng ftable.
-      int slot = slot_of[f - ftable.file];
-      if(slot < 0)
-        continue;                       // File được mở sau thời điểm chụp snapshot.
-      struct sysinfo_file *sf = &info->files[slot];
-
-      // Tất cả fd của một tiến trình được duyệt liên tiếp,
-      // vì vậy chỉ cần so sánh với PID được lưu gần nhất
-      // là đủ để đảm bảo mỗi PID chỉ xuất hiện một lần.
-      if(sf->process_count > 0 && sf->pids[sf->process_count - 1] == pid)
-        continue;
-      if(sf->process_count < NPROC)
-        sf->pids[sf->process_count++] = pid;
-    }
-    release(&p->lock);
-  }
-  return 0;
-}
