@@ -5,6 +5,17 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "sysinfo.h"
+
+// Same external object defined in file.c. Only the fixed array's addresses
+// are used here; no mutable file fields or ftable.lock are accessed.
+extern struct {
+  struct spinlock lock;
+  struct file file[NFILE];
+} ftable;
 
 struct cpu cpus[NCPU];
 
@@ -124,6 +135,7 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->scheduling_count = 0;
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -163,6 +175,7 @@ freeproc(struct proc *p)
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
+  p->scheduling_count = 0;
   p->parent = 0;
   p->name[0] = 0;
   p->chan = 0;
@@ -353,10 +366,13 @@ exit(int status)
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
-    if(p->ofile[fd]){
-      struct file *f = p->ofile[fd];
+    acquire(&p->lock);
+    struct file *f = p->ofile[fd];
+    p->ofile[fd] = 0;
+    release(&p->lock);
+    // fileclose() may sleep; detach the descriptor before calling it.
+    if(f){
       fileclose(f);
-      p->ofile[fd] = 0;
     }
   }
 
@@ -461,6 +477,7 @@ scheduler(void)
         // to release its lock and then reacquire it
         // before jumping back to us.
         p->state = RUNNING;
+        p->scheduling_count++;
         c->proc = p;
         swtch(&c->context, &p->context);
 
@@ -655,6 +672,80 @@ either_copyin(void *dst, int user_src, uint64 src, uint64 len)
     memmove(dst, (char*)src, len);
     return 0;
   }
+}
+
+// Copy the process portion only. The caller supplies a private kernel buffer
+// (not a user pointer) large enough for sysinfo, outside the kernel stack.
+// Each row is sampled separately; this is not an atomic system-wide snapshot.
+int
+collect_process_info(struct sysinfo *info)
+{
+  struct proc *p, *parent;
+  struct sysinfo_process *sp;
+  uint64 base = (uint64)ftable.file;
+
+  if(info == 0)
+    return -1;
+  info->process_count = 0;
+  memset(info->processes, 0, sizeof(info->processes));
+
+  for(p = proc; p < &proc[NPROC]; p++){
+    // Match wait()/exit(): wait_lock always precedes any proc lock.
+    acquire(&wait_lock);
+    acquire(&p->lock);
+    if(p->state == UNUSED){
+      release(&p->lock);
+      release(&wait_lock);
+      continue;
+    }
+    sp = &info->processes[info->process_count];
+    sp->pid = p->pid;
+    sp->state = p->state;
+    sp->scheduling_count = p->scheduling_count;
+    parent = p->parent;
+
+    for(int fd = 0; fd < NOFILE; fd++){
+      struct file *f = p->ofile[fd];
+      if(f == 0)
+        continue;
+      // Integer bounds/alignment checks avoid subtracting unrelated C
+      // pointers. Never dereference f, even if the pointer is invalid.
+      uint64 addr = (uint64)f;
+      if(addr < base || addr - base >= sizeof(ftable.file) ||
+         (addr - base) % sizeof(struct file) != 0)
+        goto bad;
+      struct sysinfo_fd *sf = &sp->open_files[sp->open_file_count++];
+      sf->fd = fd;
+      sf->file_index = (addr - base) / sizeof(struct file);
+    }
+    release(&p->lock);
+
+    // wait_lock keeps parentage and the live parent's lifetime stable.
+    // Drop the child's lock before taking the parent's: never two proc locks.
+    if(parent){
+      uint64 addr = (uint64)parent;
+      uint64 first = (uint64)proc;
+      if(addr < first || addr - first >= sizeof(proc) ||
+         (addr - first) % sizeof(struct proc) != 0){
+        release(&wait_lock);
+        goto clear;
+      }
+      acquire(&parent->lock);
+      sp->parent_pid = parent->pid;
+      release(&parent->lock);
+    }
+    release(&wait_lock);
+    info->process_count++;
+  }
+  return 0;
+
+bad:
+  release(&p->lock);
+  release(&wait_lock);
+clear:
+  info->process_count = 0;
+  memset(info->processes, 0, sizeof(info->processes));
+  return -1;
 }
 
 // Print a process listing to console.  For debugging.
