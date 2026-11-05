@@ -180,3 +180,40 @@ filewrite(struct file *f, uint64 addr, int n)
   return ret;
 }
 
+int file_index_of(struct file *f) { return f - ftable.file; }
+ 
+void
+collect_file_info(struct sysinfo *info)
+{
+  int pos[NFILE];
+  info->open_file_count = 0;
+ 
+  acquire(&ftable.lock);
+  for(int i = 0; i < NFILE; i++){
+    struct file *f = &ftable.file[i];
+    pos[i] = -1;
+    if(f->ref > 0){
+      struct sysinfo_file *e = &info->files[info->open_file_count];
+      e->file_index = i; e->type = f->type;
+      e->readable = f->readable; e->writable = f->writable;
+      e->ref = f->ref; e->process_count = 0;
+      pos[i] = info->open_file_count++;
+    }
+  }
+  release(&ftable.lock);          // nha ftable.lock TRUOC khi lay p->lock
+ 
+  for(struct proc *p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+    if(p->state != UNUSED){
+      for(int fd = 0; fd < NOFILE; fd++){
+        if(!p->ofile[fd]) continue;
+        int k = pos[file_index_of(p->ofile[fd])];
+        if(k < 0) continue;       // file mo sau luc chup
+        struct sysinfo_file *e = &info->files[k];
+        if(e->process_count == 0 || e->pids[e->process_count - 1] != p->pid)
+          e->pids[e->process_count++] = p->pid;   // chong trung PID
+      }
+    }
+    release(&p->lock);
+  }
+}
