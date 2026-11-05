@@ -123,6 +123,7 @@ allocproc(void)
 
 found:
   p->pid = allocpid();
+  p->scheduling_count = 0;
   p->state = USED;
 
   // Allocate a trapframe page.
@@ -461,6 +462,7 @@ scheduler(void)
         // to release its lock and then reacquire it
         // before jumping back to us.
         p->state = RUNNING;
+        p->scheduling_count++;
         c->proc = p;
         swtch(&c->context, &p->context);
 
@@ -711,3 +713,4 @@ collect_process_info(struct sysinfo *info)
   }
   release(&wait_lock);
 }
+
