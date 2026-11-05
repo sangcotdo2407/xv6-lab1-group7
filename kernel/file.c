@@ -13,7 +13,8 @@
 #include "stat.h"
 #include "proc.h"
 #include "sysinfo.h"
-extern struct proc proc[NPROC];
+
+extern struct proc proc[NPROC];   // process table, defined in proc.c
 
 struct devsw devsw[NDEV];
 struct {
@@ -182,46 +183,85 @@ filewrite(struct file *f, uint64 addr, int n)
   return ret;
 }
 
+// Index of f in ftable.file[], or -1 if f does not point into the table.
 int
 file_index_of(struct file *f)
 {
-  return f - ftable.file;
+  if(f < ftable.file || f >= ftable.file + NFILE)
+    return -1;
+  return (int)(f - ftable.file);
 }
 
+// Fill info->open_file_count and info->files[] with a snapshot of every
+// open file object (ftable.file[i].ref > 0), plus the distinct PIDs that
+// reference each object through some ofile[] slot.
+//
+// info is provided (and not otherwise touched) by sys_sysinfo(); it must
+// not live on the kernel stack.  Only the file part of *info is written.
+//
+// Locking: the ftable lock and a proc lock are never held at the same time.
+//   phase 1: hold ftable.lock, copy the file objects, release it.
+//   phase 2: for each non-UNUSED proc, hold p->lock only, scan p->ofile[].
+// The snapshot is therefore not atomic: a file opened/closed between the two
+// phases may be missed or may show a pid list that disagrees with ref.
+// Returns 0 on success, -1 on failure.
 int
 collect_file_info(struct sysinfo *info)
 {
-  int pos[NFILE];
+  int slot_of[NFILE];   // ftable index -> position in info->files[], or -1
+  int i, n;
+  struct proc *p;
+
+  if(info == 0)
+    return -1;
+
   info->open_file_count = 0;
+  memset(info->files, 0, sizeof(info->files));
+  for(i = 0; i < NFILE; i++)
+    slot_of[i] = -1;
 
+  // phase 1: snapshot the file objects.
+  n = 0;
   acquire(&ftable.lock);
-  for(int i = 0; i < NFILE; i++){
+  for(i = 0; i < NFILE; i++){
     struct file *f = &ftable.file[i];
-    pos[i] = -1;
-    if(f->ref > 0){
-      struct sysinfo_file *e = &info->files[info->open_file_count];
-      e->file_index = i;
-      e->type = f->type;
-      e->readable = f->readable;
-      e->writable = f->writable;
-      e->ref = f->ref;
-      e->process_count = 0;
-      pos[i] = info->open_file_count++;
-    }
+    if(f->ref <= 0)
+      continue;
+    struct sysinfo_file *sf = &info->files[n];
+    sf->file_index = i;
+    sf->type = f->type;
+    sf->readable = f->readable;
+    sf->writable = f->writable;
+    sf->ref = f->ref;
+    sf->process_count = 0;
+    slot_of[i] = n;
+    n++;
   }
-  release(&ftable.lock);          // nhả ftable.lock TRƯỚC khi lấy p->lock
+  release(&ftable.lock);
+  info->open_file_count = n;
 
-  for(struct proc *p = proc; p < &proc[NPROC]; p++){
+  // phase 2: collect distinct referencing PIDs.
+  for(p = proc; p < &proc[NPROC]; p++){
     acquire(&p->lock);
-    if(p->state != UNUSED){
-      for(int fd = 0; fd < NOFILE; fd++){
-        if(!p->ofile[fd]) continue;
-        int k = pos[file_index_of(p->ofile[fd])];
-        if(k < 0) continue;       // file mở sau lúc chụp
-        struct sysinfo_file *e = &info->files[k];
-        if(e->process_count == 0 || e->pids[e->process_count - 1] != p->pid)
-          e->pids[e->process_count++] = p->pid;   // chống trùng PID
-      }
+    if(p->state == UNUSED){
+      release(&p->lock);
+      continue;
+    }
+    int pid = p->pid;
+    for(i = 0; i < NOFILE; i++){
+      struct file *f = p->ofile[i];
+      if(f < ftable.file || f >= ftable.file + NFILE)
+        continue;                       // null or not a ftable entry
+      int slot = slot_of[f - ftable.file];
+      if(slot < 0)
+        continue;                       // opened after the snapshot
+      struct sysinfo_file *sf = &info->files[slot];
+      // all fds of one process are visited consecutively, so comparing
+      // with the last stored pid is enough to keep each pid once.
+      if(sf->process_count > 0 && sf->pids[sf->process_count - 1] == pid)
+        continue;
+      if(sf->process_count < NPROC)
+        sf->pids[sf->process_count++] = pid;
     }
     release(&p->lock);
   }
