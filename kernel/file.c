@@ -12,6 +12,8 @@
 #include "file.h"
 #include "stat.h"
 #include "proc.h"
+#include "sysinfo.h"
+extern struct proc proc[NPROC];
 
 struct devsw devsw[NDEV];
 struct {
