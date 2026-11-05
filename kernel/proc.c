@@ -686,3 +686,28 @@ procdump(void)
     printf("\n");
   }
 }
+
+void
+collect_process_info(struct sysinfo *info)
+{
+  info->process_count = 0;
+  acquire(&wait_lock);            // thu tu khoa: wait_lock -> p->lock (nhu wait())
+  for(struct proc *p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+    if(p->state != UNUSED){
+      struct sysinfo_process *e = &info->processes[info->process_count++];
+      e->pid = p->pid; e->state = p->state;
+      e->parent_pid = p->parent ? p->parent->pid : 0;
+      e->scheduling_count = p->scheduling_count;
+      e->open_file_count = 0;
+      for(int fd = 0; fd < NOFILE; fd++)
+        if(p->ofile[fd]){
+          e->open_files[e->open_file_count].fd = fd;
+          e->open_files[e->open_file_count].file_index = file_index_of(p->ofile[fd]);
+          e->open_file_count++;
+        }
+    }
+    release(&p->lock);
+  }
+  release(&wait_lock);
+}
