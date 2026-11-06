@@ -355,11 +355,13 @@ exit(int status)
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
-    if(p->ofile[fd]){
-      struct file *f = p->ofile[fd];
+    acquire(&p->lock);
+    struct file *f = p->ofile[fd];
+    p->ofile[fd] = 0;
+    release(&p->lock);
+    // Detach before dropping the reference; fileclose() may sleep.
+    if(f)
       fileclose(f);
-      p->ofile[fd] = 0;
-    }
   }
 
   begin_op();

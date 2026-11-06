@@ -93,9 +93,12 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+// Shared snapshot: too large for the one-page kernel stack. Collectors
+// release their spinlocks before copyout; this sleeplock serializes callers.
 static struct sysinfo kinfo;
 static struct sleeplock kinfo_lock = { .lk = { .name = "sysinfo" }, .name = "sysinfo" };
- 
+
 uint64
 sys_sysinfo(void)
 {
