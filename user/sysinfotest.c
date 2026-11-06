@@ -56,13 +56,22 @@ static int is_zero(void *p, int n) {
   return 1;
 }
 
+static void putu(uint64 v) {      // printf của xv6 không in được uint64 đầy đủ
+  char buf[21];
+  int i = 0;
+  if(v == 0) buf[i++] = '0';
+  while(v > 0){ buf[i++] = '0' + (v % 10); v /= 10; }
+  while(i > 0) write(1, &buf[--i], 1);
+}
+
 static void dump(void) {
   snap();
   printf("-- FILE DANG MO: %d --\n", si.open_file_count);
   for(int i = 0; i < si.open_file_count; i++){
     struct sysinfo_file *f = &si.files[i];
-    printf("  file#%d %s %s%s ref=%d procs=%d pids:", f->file_index, tname[f->type],
-           f->readable ? "r" : "-", f->writable ? "w" : "-", f->ref, f->process_count);
+    printf("  pid=%d ppid=%d %s sched=", p->pid, p->parent_pid, sname[p->state]);
+    putu(p->scheduling_count);
+    printf(" fds:");
     for(int j = 0; j < f->process_count; j++) printf(" %d", f->pids[j]);
     printf("\n");
   }
@@ -263,7 +272,7 @@ static void t_sched(void) {
   for(volatile int i = 0; i < 30000000; i++) ;     // chay lau de bi ngat timer
   snap(); unsigned long s2 = find_proc(getpid())->scheduling_count;
   CHECK(s2 >= s1, "khong bao gio giam");
-  printf("  scheduling_count: %d -> %d -> %d\n", (int)s0, (int)s1, (int)s2);
+  fprintf("  scheduling_count: "); putu(s0); printf(" -> "); putu(s1); printf(" -> "); putu(s2); printf("\n");
 }
 
 //  7. gioi han he thong 
@@ -328,8 +337,8 @@ static void t_badptr(void) {
   char *top = (char *)(((uint64)sbrk(0) + 4095) & ~4095ULL);
   CHECK(sysinfo((struct sysinfo *)(top + 4096)) < 0, "dia chi chua map (sau heap) -> -1");
   CHECK(sysinfo((struct sysinfo *)(top - 8)) < 0, "struct vat qua cuoi vung map -> -1");
-  CHECK(sysinfo((struct sysinfo *)(uint64)main) < 0, "dia chi vung text (khong ghi duoc) -> -1");
-  CHECK(sysinfo((struct sysinfo *)0) < 0, "con tro NULL -> -1");
+  // Khong test dia chi 0 / main: xv6 map text o dia chi 0 voi quyen RWX nen
+  // copyout thanh cong va ghi de len code cua chinh chuong trinh.
   int pid = fork();
   if(pid == 0) exit(sysinfo((struct sysinfo *)0x7fffffff00ULL) < 0 ? 0 : 1);
   int st = -1; wait(&st);
@@ -394,6 +403,60 @@ static void t_concurrent(void) {
   int bad = 0, st;
   for(int c = 0; c < n; c++){ wait(&st); if(st != 0) bad++; }
   CHECK(bad == 0, "4 tien trinh x 40 lan goi: snapshot nao cung hop le, khong deadlock");
+  CHECK(nproc() == pbase, "don dep: ve ban dau");
+}
+
+//  11. dup/close liên tục trong khi chụp snapshot
+static void t_fdrace(void) {
+  printf("[11] dup/close lien tuc dong thoi voi sysinfo\n");
+  enum { NW = 4, ROUNDS = 2000 };
+  int pbase = nproc(), ready[2], pids[NW], nstart = 0;
+  pipe(ready);
+  for(int w = 0; w < NW; w++){
+    int pid = fork();
+    if(pid < 0) break;
+    if(pid == 0){
+      close(ready[0]);
+      int first = 1;
+      for(;;){                        // chạy đến khi bị kill
+        int fd = dup(0);
+        if(fd >= 0) close(fd);
+        if(first){ write(ready[1], "r", 1); first = 0; }
+      }
+    }
+    pids[nstart++] = pid;
+  }
+  close(ready[1]);
+  char c;
+  for(int w = 0; w < nstart; w++)     // đợi mọi worker thật sự bắt đầu
+    read(ready[0], &c, 1);
+
+  int bad = 0, snaps = 0;
+  for(int i = 0; i < ROUNDS; i++){
+    if(sysinfo(&si) < 0){ bad++; break; }
+    snaps++;
+    if(si.open_file_count < 0 || si.open_file_count > NFILE) bad++;
+    if(si.process_count < 0 || si.process_count > NPROC) { bad++; continue; }
+    for(int j = 0; j < si.process_count; j++){
+      struct sysinfo_process *p = &si.processes[j];
+      if(p->open_file_count < 0 || p->open_file_count > NOFILE){ bad++; continue; }
+      for(int k = 0; k < p->open_file_count; k++){
+        struct sysinfo_fd *d = &p->open_files[k];
+        if(d->fd < 0 || d->fd >= NOFILE || d->file_index < 0 || d->file_index >= NFILE){
+          if(bad == 0)
+            printf("  sai: snapshot=%d pid=%d fd=%d file_index=%d\n", i, p->pid, d->fd, d->file_index);
+          bad++;
+        }
+      }
+    }
+  }
+  for(int w = 0; w < nstart; w++) kill(pids[w]);
+  for(int w = 0; w < nstart; w++) wait(0);
+  close(ready[0]);
+
+  CHECK(nstart == NW, "fork du 4 worker");
+  CHECK(snaps == ROUNDS, "2000 snapshot deu thanh cong");
+  CHECK(bad == 0, "moi fd trong [0,NOFILE), moi file_index trong [0,NFILE) khi dang dup/close");
   CHECK(nproc() == pbase, "don dep: ve ban dau");
 }
 
