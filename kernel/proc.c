@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sysinfo.h"
 
 struct cpu cpus[NCPU];
 
@@ -123,6 +124,7 @@ allocproc(void)
 
 found:
   p->pid = allocpid();
+  p->scheduling_count = 0;
   p->state = USED;
 
   // Allocate a trapframe page.
@@ -353,11 +355,16 @@ exit(int status)
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
-    if(p->ofile[fd]){
-      struct file *f = p->ofile[fd];
-      fileclose(f);
-      p->ofile[fd] = 0;
-    }
+    // Only the owning process changes its descriptors. Readers in other
+    // processes cannot change this pointer while we take p->lock.
+    struct file *f = p->ofile[fd];
+    if(f == 0)
+      continue;
+    acquire(&p->lock);
+    p->ofile[fd] = 0;
+    release(&p->lock);
+    // fileclose() may sleep; detach the descriptor before calling it.
+    fileclose(f);
   }
 
   begin_op();
@@ -461,6 +468,7 @@ scheduler(void)
         // to release its lock and then reacquire it
         // before jumping back to us.
         p->state = RUNNING;
+        p->scheduling_count++;
         c->proc = p;
         swtch(&c->context, &p->context);
 
@@ -685,4 +693,62 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+
+int
+collect_process_info(struct sysinfo *info)
+{
+  struct proc *p;
+
+  if (info == 0)
+    return -1;
+
+  info->process_count = 0;
+  memset(info->processes, 0, sizeof(info->processes));
+
+  acquire(&wait_lock);
+
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+
+    if (p->state != UNUSED) {
+      struct sysinfo_process *e =
+        &info->processes[info->process_count++];
+
+      e->pid = p->pid;
+      e->state = p->state;
+      e->parent_pid = p->parent ? p->parent->pid : 0;
+      e->scheduling_count = p->scheduling_count;
+      e->open_file_count = 0;
+
+      // p->lock also protects ofile[], as in Process Management.
+      for (int fd = 0; fd < NOFILE; fd++) {
+        struct file *f = p->ofile[fd];
+
+        if (f == 0)
+          continue;
+
+        int index = file_index_of(f);
+        if (index < 0 || index >= NFILE) {
+          release(&p->lock);
+          release(&wait_lock);
+          info->process_count = 0;
+          memset(info->processes, 0, sizeof(info->processes));
+          return -1;
+        }
+
+        e->open_files[e->open_file_count].fd = fd;
+        e->open_files[e->open_file_count].file_index = index;
+
+        e->open_file_count++;
+      }
+    }
+
+    release(&p->lock);
+  }
+
+  release(&wait_lock);
+
+  return 0;
 }
