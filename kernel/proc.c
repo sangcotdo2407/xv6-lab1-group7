@@ -693,26 +693,41 @@ procdump(void)
 int
 collect_process_info(struct sysinfo *info)
 {
+  if(info == 0)
+    return -1;
   info->process_count = 0;
-  acquire(&wait_lock);            // thu tu khoa: wait_lock -> p->lock (nhu wait())
+  memset(info->processes, 0, sizeof(info->processes));
+
+  acquire(&wait_lock);            // thứ tự khóa: wait_lock -> p->lock (như wait())
   for(struct proc *p = proc; p < &proc[NPROC]; p++){
     acquire(&p->lock);
     if(p->state != UNUSED){
-      struct sysinfo_process *e = &info->processes[info->process_count++];
-      e->pid = p->pid; e->state = p->state;
+      struct sysinfo_process *e = &info->processes[info->process_count];
+      e->pid = p->pid;
+      e->state = p->state;
       e->parent_pid = p->parent ? p->parent->pid : 0;
       e->scheduling_count = p->scheduling_count;
       e->open_file_count = 0;
-      for(int fd = 0; fd < NOFILE; fd++)
-        if(p->ofile[fd]){
-          e->open_files[e->open_file_count].fd = fd;
-          e->open_files[e->open_file_count].file_index = file_index_of(p->ofile[fd]);
-          e->open_file_count++;
+      for(int fd = 0; fd < NOFILE; fd++){
+        struct file *f = p->ofile[fd];      // chỉ đọc MỘT lần
+        if(f == 0)
+          continue;
+        int idx = file_index_of(f);
+        if(idx < 0){                        // con trỏ không thuộc ftable
+          release(&p->lock);
+          release(&wait_lock);
+          info->process_count = 0;
+          memset(info->processes, 0, sizeof(info->processes));
+          return -1;
         }
+        e->open_files[e->open_file_count].fd = fd;
+        e->open_files[e->open_file_count].file_index = idx;
+        e->open_file_count++;
+      }
+      info->process_count++;
     }
     release(&p->lock);
   }
   release(&wait_lock);
   return 0;
 }
-
