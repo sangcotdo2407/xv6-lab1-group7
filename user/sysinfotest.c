@@ -8,7 +8,6 @@
 // struct sysinfo ~38KB: PHAI la bien toan cuc (stack user chi 1 trang)
 static struct sysinfo si;
 static int failed, total;
-int main(void);
 
 // Gia tri enum cua kernel (file.h / proc.h) - sua neu ban xv6 khac
 enum { FT_NONE, FT_PIPE, FT_INODE, FT_DEVICE };
