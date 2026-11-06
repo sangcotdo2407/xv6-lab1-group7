@@ -185,13 +185,21 @@ filewrite(struct file *f, uint64 addr, int n)
 int
 file_index_of(struct file *f)
 {
-  return f - ftable.file;
+  uint64 base = (uint64)ftable.file;
+  uint64 addr = (uint64)f;
+  if(addr < base || addr - base >= sizeof(ftable.file) ||
+     (addr - base) % sizeof(struct file) != 0)
+    return -1;
+  return (addr - base) / sizeof(struct file);
 }
 
 int
 collect_file_info(struct sysinfo *info)
 {
   int pos[NFILE];
+
+  if(info == 0)
+    return -1;
   info->open_file_count = 0;
 
   acquire(&ftable.lock);
@@ -215,12 +223,22 @@ collect_file_info(struct sysinfo *info)
     acquire(&p->lock);
     if(p->state != UNUSED){
       for(int fd = 0; fd < NOFILE; fd++){
-        if(!p->ofile[fd]) continue;
-        int k = pos[file_index_of(p->ofile[fd])];
-        if(k < 0) continue;       // file mở sau lúc chụp
+        struct file *f = p->ofile[fd];      // chỉ đọc MỘT lần
+        if(f == 0)
+          continue;
+        int idx = file_index_of(f);
+        if(idx < 0){                        // con trỏ không thuộc ftable
+          release(&p->lock);
+          return -1;
+        }
+        int k = pos[idx];                   // idx đã nằm trong [0, NFILE)
+        if(k < 0)
+          continue;                         // file mở sau lúc chụp
         struct sysinfo_file *e = &info->files[k];
-        if(e->process_count == 0 || e->pids[e->process_count - 1] != p->pid)
-          e->pids[e->process_count++] = p->pid;   // chống trùng PID
+        if(e->process_count == 0 || e->pids[e->process_count - 1] != p->pid){
+          if(e->process_count < NPROC)
+            e->pids[e->process_count++] = p->pid;   // chống trùng PID
+        }
       }
     }
     release(&p->lock);
