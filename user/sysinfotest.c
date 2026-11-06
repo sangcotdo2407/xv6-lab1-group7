@@ -56,6 +56,16 @@ static int is_zero(void *p, int n) {
   return 1;
 }
 
+// Keep the uint64 printer used by the syscall branch: xv6 printf's %d
+// accepts int and cannot display the full scheduling counter.
+static void putu(uint64 v) {
+  char buf[21];
+  int i = 0;
+  if(v == 0) buf[i++] = '0';
+  while(v > 0){ buf[i++] = '0' + (v % 10); v /= 10; }
+  while(i > 0) write(1, &buf[--i], 1);
+}
+
 static void dump(void) {
   snap();
   printf("-- FILE DANG MO: %d --\n", si.open_file_count);
@@ -69,8 +79,9 @@ static void dump(void) {
   printf("-- TIEN TRINH (state != UNUSED): %d --\n", si.process_count);
   for(int i = 0; i < si.process_count; i++){
     struct sysinfo_process *p = &si.processes[i];
-    printf("  pid=%d ppid=%d %s sched=%d fds:", p->pid, p->parent_pid,
-           sname[p->state], (int)p->scheduling_count);
+    printf("  pid=%d ppid=%d %s sched=", p->pid, p->parent_pid, sname[p->state]);
+    putu(p->scheduling_count);
+    printf(" fds:");
     for(int k = 0; k < p->open_file_count; k++)
       printf(" %d->#%d", p->open_files[k].fd, p->open_files[k].file_index);
     printf("\n");
@@ -256,14 +267,14 @@ static void t_zombie(void) {
 //  6. dem lap lich 
 static void t_sched(void) {
   printf("[6] scheduling_count\n");
-  snap(); unsigned long s0 = find_proc(getpid())->scheduling_count;
+  snap(); uint64 s0 = find_proc(getpid())->scheduling_count;
   sleep(1); sleep(1);
-  snap(); unsigned long s1 = find_proc(getpid())->scheduling_count;
+  snap(); uint64 s1 = find_proc(getpid())->scheduling_count;
   CHECK(s1 > s0, "tang sau khi ngu / duoc danh thuc");
   for(volatile int i = 0; i < 30000000; i++) ;     // chay lau de bi ngat timer
-  snap(); unsigned long s2 = find_proc(getpid())->scheduling_count;
+  snap(); uint64 s2 = find_proc(getpid())->scheduling_count;
   CHECK(s2 >= s1, "khong bao gio giam");
-  printf("  scheduling_count: %d -> %d -> %d\n", (int)s0, (int)s1, (int)s2);
+  printf("  scheduling_count: "); putu(s0); printf(" -> "); putu(s1); printf(" -> "); putu(s2); printf("\n");
 }
 
 //  7. gioi han he thong 

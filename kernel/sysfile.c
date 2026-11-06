@@ -39,20 +39,18 @@ argfd(int n, int *pfd, struct file **pf)
 static int
 fdalloc(struct file *f)
 {
-  struct proc *p = myproc();
   int fd;
+  struct proc *p = myproc();
 
-  acquire(&p->ofile_lock);
-
-  for (fd = 0; fd < NOFILE; fd++) {
-    if (p->ofile[fd] == 0) {
+  acquire(&p->lock);
+  for(fd = 0; fd < NOFILE; fd++){
+    if(p->ofile[fd] == 0){
       p->ofile[fd] = f;
-      release(&p->ofile_lock);
+      release(&p->lock);
       return fd;
     }
   }
-
-  release(&p->ofile_lock);
+  release(&p->lock);
   return -1;
 }
 
@@ -105,21 +103,12 @@ sys_close(void)
   int fd;
   struct file *f;
 
-  argint(0, &fd);
-
-  if(fd < 0 || fd >= NOFILE)
+  if(argfd(0, &fd, &f) < 0)
     return -1;
 
   struct proc *p = myproc();
 
   acquire(&p->lock);
-  f = p->ofile[fd];
-
-  if(f == 0){
-    release(&p->lock);
-    return -1;
-  }
-
   p->ofile[fd] = 0;
   release(&p->lock);
 
@@ -507,16 +496,20 @@ sys_pipe(void)
     return -1;
   fd0 = -1;
   if((fd0 = fdalloc(rf)) < 0 || (fd1 = fdalloc(wf)) < 0){
+    acquire(&p->lock);
     if(fd0 >= 0)
       p->ofile[fd0] = 0;
+    release(&p->lock);
     fileclose(rf);
     fileclose(wf);
     return -1;
   }
   if(copyout(p->pagetable, fdarray, (char*)&fd0, sizeof(fd0)) < 0 ||
      copyout(p->pagetable, fdarray+sizeof(fd0), (char *)&fd1, sizeof(fd1)) < 0){
+    acquire(&p->lock);
     p->ofile[fd0] = 0;
     p->ofile[fd1] = 0;
+    release(&p->lock);
     fileclose(rf);
     fileclose(wf);
     return -1;

@@ -207,25 +207,19 @@ filewrite(struct file *f, uint64 addr, int n)
   return ret;
 }
 
-// Index of f in ftable.file[], or -1 if f does not point into the table.
+// Return the slot in the fixed file table, or -1 for an invalid pointer.
+// This is the file_index_of() interface also used by File Management.
+// Addresses are immutable: no lock or file-field dereference is needed.
 int
 file_index_of(struct file *f)
 {
   uint64 addr = (uint64)f;
-  uint64 start = (uint64)&ftable.file[0];
-  uint64 end = start + sizeof(ftable.file);
+  uint64 base = (uint64)ftable.file;
 
-  // Kiem tra NULL va gioi han dia chi
-  if(f == 0 || addr < start || addr >= end)
+  if(addr < base || addr - base >= sizeof(ftable.file) ||
+     (addr - base) % sizeof(struct file) != 0)
     return -1;
-
-  // Kiem tra con tro co dung dau mot struct file hay khong
-  uint64 offset = addr - start;
-
-  if(offset % sizeof(struct file) != 0)
-    return -1;
-
-  return (int)(offset / sizeof(struct file));
+  return (addr - base) / sizeof(struct file);
 }
 
 // Fill info->open_file_count and info->files[] with a snapshot of every
@@ -242,7 +236,9 @@ file_index_of(struct file *f)
 // The snapshot is therefore not atomic: a file opened/closed between the
 // two phases may be missed or may show a PID list that disagrees with ref.
 //
-// Returns 0 on success, -1 on failure.
+// All writers of ofile[] use p->lock, matching Process Management.
+// Returns 0 on success, -1 for a null info or an invalid file pointer.
+// On invalid input, clear only the file portion; never return partial rows.
 int
 collect_file_info(struct sysinfo *info)
 {
@@ -301,10 +297,18 @@ collect_file_info(struct sysinfo *info)
     for (i = 0; i < NOFILE; i++) {
       struct file *f = p->ofile[i];
 
-      if (f < ftable.file || f >= ftable.file + NFILE)
+      if (f == 0)
         continue;
 
-      int slot = slot_of[f - ftable.file];
+      int index = file_index_of(f);
+      if (index < 0 || index >= NFILE) {
+        release(&p->lock);
+        info->open_file_count = 0;
+        memset(info->files, 0, sizeof(info->files));
+        return -1;
+      }
+
+      int slot = slot_of[index];
 
       if (slot < 0)
         continue;

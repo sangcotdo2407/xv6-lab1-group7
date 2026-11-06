@@ -15,6 +15,7 @@
 
 #define T_PIPE   1   // enum value of FD_PIPE   in kernel/file.h
 #define T_INODE  2   // enum value of FD_INODE  in kernel/file.h
+#define T_DEVICE 3
 
 static struct sysinfo si;   // ~40 KB: must be static, not on the user stack
 static int failures;
@@ -76,6 +77,67 @@ distinct_pids(struct sysinfo_file *f)
       if(f->pids[i] == f->pids[j])
         return 0;
   return 1;
+}
+
+static int
+zeroed(void *data, int size)
+{
+  uchar *p = data;
+  for(int i = 0; i < size; i++)
+    if(p[i])
+      return 0;
+  return 1;
+}
+
+// Check structural invariants even while other CPUs change descriptors.
+// File and process rows are sampled at different times: do not compare
+// ref against a later FD total or require every FD in the file snapshot.
+static int
+snapshot_ok(void)
+{
+  if(si.open_file_count < 0 || si.open_file_count > NFILE ||
+     si.process_count < 0 || si.process_count > NPROC)
+    return 0;
+  for(int i = 0; i < si.open_file_count; i++){
+    struct sysinfo_file *f = &si.files[i];
+    if(f->file_index < 0 || f->file_index >= NFILE || f->ref < 1 ||
+       f->type < 0 || f->type > T_DEVICE ||
+       f->readable < 0 || f->readable > 1 ||
+       f->writable < 0 || f->writable > 1 ||
+       f->process_count < 0 || f->process_count > NPROC)
+      return 0;
+    if(!distinct_pids(f))
+      return 0;
+    for(int j = 0; j < f->process_count; j++)
+      if(f->pids[j] <= 0)
+        return 0;
+    for(int j = i + 1; j < si.open_file_count; j++)
+      if(f->file_index == si.files[j].file_index)
+        return 0;
+    if(!zeroed(&f->pids[f->process_count],
+               (NPROC-f->process_count)*sizeof(int)))
+      return 0;
+  }
+  for(int i = 0; i < si.process_count; i++){
+    struct sysinfo_process *p = &si.processes[i];
+    if(p->open_file_count < 0 || p->open_file_count > NOFILE)
+      return 0;
+    int last = -1;
+    for(int j = 0; j < p->open_file_count; j++){
+      struct sysinfo_fd *f = &p->open_files[j];
+      if(f->fd <= last || f->fd >= NOFILE ||
+         f->file_index < 0 || f->file_index >= NFILE)
+        return 0;
+      last = f->fd;
+    }
+    if(!zeroed(&p->open_files[p->open_file_count],
+               (NOFILE-p->open_file_count)*sizeof(struct sysinfo_fd)))
+      return 0;
+  }
+  return zeroed(&si.files[si.open_file_count],
+                (NFILE-si.open_file_count)*sizeof(struct sysinfo_file)) &&
+         zeroed(&si.processes[si.process_count],
+                (NPROC-si.process_count)*sizeof(struct sysinfo_process));
 }
 
 // Snapshot, then return the file object behind fd (0 if absent).
@@ -285,6 +347,110 @@ test_repeat(void)
   CHECK(same, "50 calls, same open_file_count");
 }
 
+// Both fd-allocation rollback paths and both copyout failure paths must
+// detach descriptors before fileclose(), without holding a proc lock.
+static void
+test_pipe_errors(void)
+{
+  printf("test 9: pipe rollback and invalid descriptors\n");
+  int base = count_now(), fds[NOFILE], n = 0, p[2];
+  int fd;
+  while(n < NOFILE && (fd = dup(0)) >= 0)
+    fds[n++] = fd;
+  CHECK(n > 0 && n < NOFILE, "filled descriptor table with dup");
+  CHECK(pipe(p) < 0, "pipe fails with no descriptor slot");
+  CHECK(count_now() == base && snapshot_ok(), "no file leak after first fdalloc fails");
+  if(n > 0){
+    close(fds[--n]);
+    CHECK(pipe(p) < 0, "pipe fails with only one descriptor slot");
+    CHECK(count_now() == base && snapshot_ok(), "second fdalloc rollback restores files");
+    CHECK(fd_to_index(getpid(), fds[n]) == -1, "rolled-back descriptor is absent");
+  }
+  for(int i = 0; i < n; i++)
+    close(fds[i]);
+  CHECK(pipe((int *)(1ULL << 38)) < 0, "pipe rejects unmapped destination");
+  CHECK(count_now() == base && snapshot_ok(), "first copyout rollback restores files");
+
+  char *heap = sbrk(8192);
+  if(heap != (char *)-1){
+    uint64 top = ((uint64)sbrk(0) + 4095) & ~4095ULL;
+    CHECK(pipe((int *)(top-sizeof(int))) < 0, "pipe rejects second fd outside mapped memory");
+    CHECK(count_now() == base && snapshot_ok(), "second copyout rollback restores files");
+    sbrk(-8192);
+  } else {
+    CHECK(0, "allocate boundary buffer");
+  }
+  CHECK(dup(-1) < 0 && close(-1) < 0 && close(NOFILE) < 0,
+        "invalid descriptors return errors");
+  CHECK(open("no-such-file", O_RDONLY) < 0, "open missing file returns an error");
+  CHECK(count_now() == base && snapshot_ok(), "error paths preserve snapshot");
+}
+
+static void
+test_concurrent(void)
+{
+  enum { WORKERS = 4, SNAPSHOTS = 10000 };
+  printf("test 10: descriptor churn with %d snapshots\n", SNAPSHOTS);
+  int base = count_now(), ready[2], workers[WORKERS], started = 0;
+  if(pipe(ready) < 0){
+    CHECK(0, "create worker ready pipe");
+    return;
+  }
+  for(int w = 0; w < WORKERS; w++){
+    int pid = fork();
+    if(pid < 0)
+      break;
+    if(pid == 0){
+      close(ready[0]);
+      if(write(ready[1], "r", 1) != 1)
+        exit(1);
+      close(ready[1]);
+      for(;;){
+        int fd = dup(0);
+        if(fd < 0 || close(fd) < 0)
+          exit(1);
+        if(w == 1){
+          fd = open("README", O_RDONLY);
+          if(fd < 0 || close(fd) < 0)
+            exit(1);
+        } else if(w == 2){
+          int p[2];
+          if(pipe(p) < 0 || close(p[0]) < 0 || close(p[1]) < 0)
+            exit(1);
+        } else if(w == 3){
+          if(pipe((int *)(1ULL << 38)) != -1)
+            exit(1);
+        }
+      }
+    }
+    workers[started++] = pid;
+  }
+  close(ready[1]);
+  int ok = started == WORKERS;
+  char c;
+  for(int w = 0; w < started; w++)
+    if(read(ready[0], &c, 1) != 1)
+      ok = 0;
+  int snapshots = 0;
+  for(; snapshots < SNAPSHOTS; snapshots++){
+    if(sysinfo(&si) < 0 || !snapshot_ok()){
+      ok = 0;
+      break;
+    }
+  }
+  for(int w = 0; w < started; w++)
+    kill(workers[w]);
+  for(int w = 0; w < started; w++){
+    int status;
+    if(wait(&status) < 0 || status != -1)
+      ok = 0;  // workers normally stop only when killed
+  }
+  close(ready[0]);
+  CHECK(ok && snapshots == SNAPSHOTS,
+        "4 workers: dup/close, open/close, pipe and rollback keep bounds and unique PIDs");
+  CHECK(count_now() == base && snapshot_ok(), "worker exit releases all files");
+}
+
 int
 main(void)
 {
@@ -296,6 +462,8 @@ main(void)
   test_pipe();
   test_limits();
   test_repeat();
+  test_pipe_errors();
+  test_concurrent();
   if(failures == 0)
     printf("filetest: ALL PASSED\n");
   else

@@ -52,12 +52,10 @@ procinit(void)
   
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
-  for (p = proc; p < &proc[NPROC]; p++) {
-  initlock(&p->lock, "proc");
-  initlock(&p->ofile_lock, "ofile_lock");
-
-  p->state = UNUSED;
-  p->kstack = KSTACK((int)(p - proc));
+  for(p = proc; p < &proc[NPROC]; p++) {
+      initlock(&p->lock, "proc");
+      p->state = UNUSED;
+      p->kstack = KSTACK((int) (p - proc));
   }
 }
 
@@ -307,14 +305,9 @@ fork(void)
   np->trapframe->a0 = 0;
 
   // increment reference counts on open file descriptors.
-  acquire(&p->ofile_lock);
-
-  for (i = 0; i < NOFILE; i++) {
-    if (p->ofile[i])
+  for(i = 0; i < NOFILE; i++)
+    if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
-  }
-  release(&p->ofile_lock);
-  
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
@@ -359,23 +352,19 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
-    
-  // Detach all open files under ofile_lock.
-  struct file *ofile_to_close[NOFILE];
 
-  acquire(&p->ofile_lock);
-
-  for (int fd = 0; fd < NOFILE; fd++) {
-    ofile_to_close[fd] = p->ofile[fd];
+  // Close all open files.
+  for(int fd = 0; fd < NOFILE; fd++){
+    // Only the owning process changes its descriptors. Readers in other
+    // processes cannot change this pointer while we take p->lock.
+    struct file *f = p->ofile[fd];
+    if(f == 0)
+      continue;
+    acquire(&p->lock);
     p->ofile[fd] = 0;
-  }
-
-  release(&p->ofile_lock);
-
-  // Close files outside the lock.
-  for (int fd = 0; fd < NOFILE; fd++) {
-    if (ofile_to_close[fd])
-      fileclose(ofile_to_close[fd]);
+    release(&p->lock);
+    // fileclose() may sleep; detach the descriptor before calling it.
+    fileclose(f);
   }
 
   begin_op();
@@ -716,6 +705,7 @@ collect_process_info(struct sysinfo *info)
     return -1;
 
   info->process_count = 0;
+  memset(info->processes, 0, sizeof(info->processes));
 
   acquire(&wait_lock);
 
@@ -732,26 +722,27 @@ collect_process_info(struct sysinfo *info)
       e->scheduling_count = p->scheduling_count;
       e->open_file_count = 0;
 
-      // Protect ofile[] while reading.
-      acquire(&p->ofile_lock);
-
+      // p->lock also protects ofile[], as in Process Management.
       for (int fd = 0; fd < NOFILE; fd++) {
         struct file *f = p->ofile[fd];
 
         if (f == 0)
           continue;
 
-        if (e->open_file_count >= NOFILE)
-          break;
+        int index = file_index_of(f);
+        if (index < 0 || index >= NFILE) {
+          release(&p->lock);
+          release(&wait_lock);
+          info->process_count = 0;
+          memset(info->processes, 0, sizeof(info->processes));
+          return -1;
+        }
 
         e->open_files[e->open_file_count].fd = fd;
-        e->open_files[e->open_file_count].file_index =
-          file_index_of(f);
+        e->open_files[e->open_file_count].file_index = index;
 
         e->open_file_count++;
       }
-
-      release(&p->ofile_lock);
     }
 
     release(&p->lock);
@@ -761,5 +752,3 @@ collect_process_info(struct sysinfo *info)
 
   return 0;
 }
-
-
