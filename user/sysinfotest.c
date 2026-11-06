@@ -69,17 +69,17 @@ static void dump(void) {
   printf("-- FILE DANG MO: %d --\n", si.open_file_count);
   for(int i = 0; i < si.open_file_count; i++){
     struct sysinfo_file *f = &si.files[i];
-    printf("  pid=%d ppid=%d %s sched=", p->pid, p->parent_pid, sname[p->state]);
-    putu(p->scheduling_count);
-    printf(" fds:");
+    printf("  file#%d %s %s%s ref=%d procs=%d pids:", f->file_index, tname[f->type],
+           f->readable ? "r" : "-", f->writable ? "w" : "-", f->ref, f->process_count);
     for(int j = 0; j < f->process_count; j++) printf(" %d", f->pids[j]);
     printf("\n");
   }
   printf("-- TIEN TRINH (state != UNUSED): %d --\n", si.process_count);
   for(int i = 0; i < si.process_count; i++){
     struct sysinfo_process *p = &si.processes[i];
-    printf("  pid=%d ppid=%d %s sched=%d fds:", p->pid, p->parent_pid,
-           sname[p->state], (int)p->scheduling_count);
+    printf("  pid=%d ppid=%d %s sched=", p->pid, p->parent_pid, sname[p->state]);
+    putu(p->scheduling_count);
+    printf(" fds:");
     for(int k = 0; k < p->open_file_count; k++)
       printf(" %d->#%d", p->open_files[k].fd, p->open_files[k].file_index);
     printf("\n");
@@ -265,14 +265,14 @@ static void t_zombie(void) {
 //  6. dem lap lich 
 static void t_sched(void) {
   printf("[6] scheduling_count\n");
-  snap(); unsigned long s0 = find_proc(getpid())->scheduling_count;
+  snap(); uint64 s0 = find_proc(getpid())->scheduling_count;
   sleep(1); sleep(1);
-  snap(); unsigned long s1 = find_proc(getpid())->scheduling_count;
+  snap(); uint64 s1 = find_proc(getpid())->scheduling_count;
   CHECK(s1 > s0, "tang sau khi ngu / duoc danh thuc");
   for(volatile int i = 0; i < 30000000; i++) ;     // chay lau de bi ngat timer
-  snap(); unsigned long s2 = find_proc(getpid())->scheduling_count;
+  snap(); uint64 s2 = find_proc(getpid())->scheduling_count;
   CHECK(s2 >= s1, "khong bao gio giam");
-  fprintf("  scheduling_count: "); putu(s0); printf(" -> "); putu(s1); printf(" -> "); putu(s2); printf("\n");
+  printf("  scheduling_count: "); putu(s0); printf(" -> "); putu(s1); printf(" -> "); putu(s2); printf("\n");
 }
 
 //  7. gioi han he thong 
@@ -464,6 +464,7 @@ int main(void) {
   printf("===== sysinfotest =====\n");
   t_basic(); t_open(); t_dup(); t_fork_pipe(); t_zombie();
   t_sched(); t_limits(); t_badptr(); t_boundary(); t_concurrent();
+  t_fdrace();
   printf("===== %d/%d PASS =====\n", total - failed, total);
   exit(failed != 0);
 }
