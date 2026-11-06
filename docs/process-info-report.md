@@ -2,15 +2,9 @@
 
 ## Phạm vi và đối chiếu yêu cầu
 
-Nhánh: `feature/process-info`, nền `origin/main` tại `1e90d3a`.
-Đã đọc cả ba trang `Lab1_File_Process.pdf`, toàn bộ nội dung phân công
-`Lab1_Nhom7_PhanCong_ThongNhat_Sysinfo.docx`, `sysinfo-conventions.md`,
-`review-pr.md`, `kernel/sysinfo.h`, `kernel/defs.h` và mã nguồn liên quan.
-
-Đề giảng viên mục 4.1 yêu cầu giải thích `pid/state/context`, luồng `fork()` và
-`scheduler()/sched()/yield()`. Mục 4.2 yêu cầu thống kê mọi tiến trình có
-`state != UNUSED`, gồm PID, trạng thái, PID cha, số sự kiện lập lịch và file đang
-mở. Phần này thực hiện đúng các yêu cầu đó trong phạm vi của Sang.
+Nhánh: `feature/process-info`, nền `main` tại `1e90d3a`. Phần này đáp ứng mục
+4.1/4.2 của `Lab1_File_Process.pdf`: giải thích process/lập lịch và thu thập mọi
+tiến trình có `state != UNUSED`, gồm PID, state, PID cha, số lượt chạy và FD.
 
 Không có xung đột chức năng giữa đề và phân công. Hai khác biệt cần ghi nhận:
 
@@ -21,23 +15,21 @@ Không có xung đột chức năng giữa đề và phân công. Hai khác bi�
   nhưng biên dịch và chạy QEMU bằng Linux qua WSL Ubuntu 24.04. Việc chọn
   xv6-labs-2023, tên nhánh và cách phân công là quy ước nhóm.
 
-Phần bàn giao này chưa thực hiện giai đoạn tích hợp toàn nhóm hoặc đóng gói
-bài nộp. Commit và PR riêng cho `feature/process-info` phục vụ review trước
-khi tích hợp; không tự merge vào `main`. Những hướng dẫn nộp bài trong tài liệu
-là bối cảnh, không phải yêu cầu thực hiện trong phần công việc này.
-
 ## Thiết kế và thay đổi
 
 | File | Thay đổi |
 | --- | --- |
 | `kernel/proc.h` | Thêm `uint64 scheduling_count` trong nhóm trường bảo vệ bằng `p->lock`; ghi rõ quy tắc khóa `ofile[]`. |
 | `kernel/proc.c` | Reset bộ đếm, tăng khi được chọn chạy, cài đặt `collect_process_info()`, tháo descriptor có khóa trước khi đóng trong `exit()`. |
+| `kernel/file.c`, `kernel/defs.h` | Dùng giao diện `int file_index_of(struct file *)` có sẵn trong PR #3; định nghĩa một helper kiểm tra miền địa chỉ/căn chỉnh tại nơi sở hữu bảng. |
 | `kernel/sysfile.c` | Khóa ngắn quanh các chỗ gán/xóa `ofile[]`: `fdalloc()`, `sys_close()` và hai nhánh rollback của `sys_pipe()`. |
 | `tests/process_info_kernel.c` | Kiểm thử kernel trực tiếp, chỉ đưa vào bản sao build tạm. |
 | `tests/run_process_info.py` | Tạo bản sao nguồn, build và điều khiển QEMU; có chế độ production không gắn mã kiểm thử. |
+| `tests/test_process_info_runner.py` | Kiểm tra vị trí chèn selftest và lỗi khi cấu trúc nguồn không còn phù hợp. |
 | `.gitignore` | Bỏ qua log build/test và Python bytecode phát sinh. |
 | `docs/process-info-report.md` | Báo cáo kỹ thuật và nội dung vấn đáp. |
 | `docs/process-info-tests.md` | Lệnh kiểm thử, bằng chứng và giới hạn thực tế. |
+| `docs/process-info-review-response.md` | Đối chiếu từng góp ý của hai reviewer và quy tắc tích hợp. |
 
 `sysfile.c` là phụ thuộc đồng bộ bắt buộc: xv6 gốc cho phép tiến trình tự sửa
 `ofile[]` không khóa, vì chưa có tiến trình khác đọc bảng này. Chỉ khóa ở phía
@@ -47,9 +39,10 @@ Việc sao chép `np->ofile[]` trong `fork()` vốn đã giữ `np->lock` nên k
 thêm khóa ở đó. Chủ sở hữu vẫn có thể đọc descriptor của mình không khóa vì
 xv6 không có nhiều thread cùng sửa một bảng descriptor của một tiến trình.
 
-Không sửa `kernel/file.c`, `kernel/sysinfo.h`, `kernel/defs.h`, syscall dispatch,
-user API hoặc `user/sysinfotest.c`. `sched()`, `yield()`, `fork()` và `swtch.S`
-giữ nguyên mã thực thi. Makefile production không nạp mã kiểm thử kernel.
+Thay đổi ở `file.c/defs.h` chỉ phục vụ helper đã được hai reviewer đề nghị;
+chữ ký giống PR #3. Không đổi `kernel/sysinfo.h`, các hàm `collect_*`, syscall
+dispatch hoặc user API. `sched()`, `yield()`, `fork()`, `swtch.S` và Makefile
+production giữ nguyên mã thực thi.
 
 ## Cách collect_process_info() hoạt động
 
@@ -65,10 +58,9 @@ phải được xử lý bởi syscall và `copyout()`, không truyền trực t
 3. Chép PID, trạng thái, bộ đếm và các descriptor dưới `p->lock`. Duyệt đúng
    `NOFILE` ô; mỗi ô khác `0` tạo một phần tử `{fd, file_index}`. Các phần tử
    được xếp liên tiếp theo thứ tự fd tăng dần; `open_file_count` là số descriptor.
-4. Với con trỏ file, chuyển địa chỉ thành `uint64`, kiểm tra miền địa chỉ của
-   `ftable.file[]` và chia hết cho `sizeof(struct file)`, sau đó tính chỉ số.
-   Không trừ hai con trỏ C không cùng mảng, không dereference con trỏ file,
-   không đọc `ref/type` hoặc giữ `ftable.lock`.
+4. Gọi `file_index_of(f)`, chỉ chấp nhận chỉ số trong `[0, NFILE)`. Helper ở
+   `file.c` kiểm tra địa chỉ số nguyên, miền và căn chỉnh; không dereference
+   con trỏ, không đọc `ref/type`, không lấy `ftable.lock`.
 5. Lưu con trỏ cha rồi nhả khóa con. Vẫn giữ `wait_lock` để tránh reparent/reap;
    kiểm tra miền địa chỉ và căn chỉnh của con trỏ cha, lấy riêng khóa cha để đọc
    PID, nhả khóa cha và `wait_lock`. Không có cha thì `parent_pid` giữ giá trị 0.
@@ -79,11 +71,9 @@ Mỗi vòng lặp tạo tối đa một hàng nên không thể vượt `NPROC`;
 tạo tối đa một mục nên không thể vượt `NOFILE`; file index đã kiểm tra trong
 `[0, NFILE)`. Các phần tử dư và padding trong các hàng process được xóa về 0.
 
-`ftable` hiện là đối tượng global có external linkage trong `file.c`. Collector
-khai báo `extern` tương thích với đúng layout hiện tại, chỉ sử dụng địa chỉ mảng
-cố định. Vì vậy không cần thay đổi API chung hoặc đợi helper của thành viên
-khác. Khi tích hợp, nếu Vũ đổi layout hoặc chuyển `ftable` thành `static`, cả
-nhóm phải thống nhất helper ánh xạ trong `file.c`; không tự sửa giao diện ở đây.
+Chỉ `file.c` biết layout của `ftable`; `proc.c` và test không khai báo lại bảng.
+Helper ánh xạ địa chỉ vào mảng cố định nên không cần khóa. Địa chỉ ngoài mảng,
+NULL hoặc lệch dù chỉ một byte đều trả `-1` trước khi tính chỉ số.
 
 ## Khóa, bộ nhớ và giới hạn nhất quán
 
@@ -95,8 +85,9 @@ Mọi đường lỗi đều nhả khóa. Không sleep, cấp phát bộ nhớ, 
 
 `fileclose()` có thể gọi `begin_op()/iput()` và sleep. Vì vậy `exit()` và
 `sys_close()` tháo descriptor dưới `p->lock`, nhả khóa rồi mới gọi `fileclose()`.
-Hai nhánh rollback pipe cũng nhả khóa trước khi đóng file. Khóa mới trong
-`fdalloc()` chỉ bao quanh việc tìm/gán ô; không bao quanh thao tác filesystem.
+Hai nhánh rollback pipe cũng nhả khóa trước khi đóng file. `exit()` đọc ô của
+chính mình để bỏ qua FD trống; chỉ owner sửa bảng nên con trỏ giữ nguyên đến
+khi tháo dưới khóa. `fdalloc()` chỉ khóa quanh việc tìm/gán ô.
 
 Caller phải cung cấp buffer đủ lớn và không cho nhiều caller dùng chung cùng
 lúc nếu chưa có cơ chế tuần tự hóa. Collector không tạo `struct sysinfo` cục bộ
@@ -185,22 +176,17 @@ số syscall, số lần sleep hay tổng số lời gọi `swtch()`. Một disp
 preemption, tự yield, hoặc tỉnh dậy từ sleep. Kiểu `uint64` sẽ wrap theo phép
 toán unsigned sau 2^64 lượt; không đổi nghĩa thành bộ đếm bão hòa.
 
-## Ghi nhớ khi vấn đáp
+## Tích hợp và vấn đáp
 
-- Vì sao khóa collector thôi chưa đủ? Vì writer cũng phải dùng cùng khóa;
-  `ofile[]` của xv6 gốc chỉ có chủ sở hữu đọc/ghi nên trước đây không cần khóa.
-- Vì sao không lấy khóa cha khi đang giữ khóa con? Để tránh chu trình giữa
-  nhiều khóa process; `wait_lock` giữ ổn định quan hệ trong lúc đổi khóa.
-- Vì sao không cần `ftable.lock` để tính file index? Chỉ tính vị trí trong mảng
-  tĩnh, không đọc nội dung đối tượng có thể thay đổi.
-- Vì sao con không sao chép bộ đếm cha? `allocproc()` tạo một lần sống mới với
-  context riêng; `fork()` chỉ sao chép trapframe, bộ nhớ user và các tham chiếu.
-- Tại sao không tăng ở `yield()`? Một lượt chạy còn có thể bắt đầu sau sleep,
-  lần chạy đầu tiên hoặc sau wakeup; chỉ scheduler quyết định dispatch thực tế.
-- Có phải snapshot cho biết toàn hệ thống tại một thời điểm duy nhất? Không;
-  phải trình bày rõ tính nhất quán theo hàng và khả năng file index tái sử dụng.
-- Vì sao không khai báo toàn bộ sysinfo trên stack? Kích thước vượt nhiều lần
-  stack kernel một trang; syscall phải có vùng đệm đủ lớn và đồng bộ caller.
+Thứ tự đề xuất: review/merge PR #4 trước; PR #2/#3 sau đó rebase trên main mới.
+Giữ đúng một bản process collector, trường counter và điểm tăng/reset của PR #4;
+giữ một helper `file_index_of()` đã kiểm tra căn chỉnh; ghép collector file của
+Vũ và syscall của Thi. Quy tắc này không tự giải quyết xung đột trên nhánh khác.
 
-Kết quả chạy và phần chưa kiểm chứng được ghi riêng trong
-[process-info-tests.md](process-info-tests.md).
+Khi vấn đáp cần giải thích được: vì sao writer và reader dùng cùng khóa;
+vì sao nhả khóa con trước khi lấy khóa cha; vì sao helper không cần ftable.lock;
+vì sao con có counter riêng; và vì sao số lượt dispatch khác CPU time/yield.
+Luôn nêu ba giới hạn: snapshot không nguyên tử giữa file/process, index có thể
+tái sử dụng, wait_lock chỉ giữ theo từng hàng.
+
+Lệnh chạy, toolchain và kết quả nằm trong [process-info-tests.md](process-info-tests.md).

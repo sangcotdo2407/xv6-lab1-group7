@@ -1,5 +1,9 @@
 // Included in proc.c ONLY in the temporary build made by run_process_info.py.
 // This gives tests access to allocproc/freeproc without exporting a kernel API.
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+
 extern uint64 sys_dup(void);
 extern uint64 sys_close(void);
 extern uint64 sys_pipe(void);
@@ -170,10 +174,20 @@ process_info_selftest(void)
 
   for(int i = 0; i < NFILE; i++){
     pit_files[i] = filealloc();
-    pit_check(pit_files[i] == &ftable.file[i], "all NFILE slots allocated");
+    pit_check(pit_files[i] && file_index_of(pit_files[i]) == i,
+              "all NFILE slots allocated in index order");
     pit_files[i]->type = FD_NONE;
   }
   pit_check(filealloc() == 0, "NFILE exhaustion");
+  pit_check(file_index_of(0) == -1, "file_index_of rejects NULL");
+  uint64 first_file = (uint64)pit_files[0];
+  uint64 past_files = (uint64)pit_files[NFILE-1] + sizeof(struct file);
+  uint64 invalid_files[] = { first_file-1, first_file+1, first_file+8,
+                             past_files-1, past_files, (uint64)-1 };
+  for(int i = 0; i < NELEM(invalid_files); i++)
+    pit_check(file_index_of((struct file *)invalid_files[i]) == -1,
+              "file_index_of rejects out-of-range and misaligned addresses");
+  printf("PROCESS_INFO PASS: shared file_index_of validates all slots and invalid pointers\n");
 
   int n = 0;
   struct proc *p;
@@ -215,11 +229,9 @@ process_info_selftest(void)
     pit_check(pit_find(oldpid)->state == state, "non-UNUSED states included");
   }
 
-  uint64 invalid[] = { (uint64)ftable.file-1, (uint64)ftable.file+1,
-                       (uint64)&ftable.file[NFILE] };
-  for(int i = 0; i < NELEM(invalid); i++){
+  for(int i = 0; i < NELEM(invalid_files); i++){
     acquire(&p->lock);
-    p->ofile[0] = (struct file *)invalid[i];
+    p->ofile[0] = (struct file *)invalid_files[i];
     release(&p->lock);
     pit_failed_collect();
   }

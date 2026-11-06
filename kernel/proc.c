@@ -5,17 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
-#include "fs.h"
-#include "sleeplock.h"
-#include "file.h"
 #include "sysinfo.h"
-
-// Same external object defined in file.c. Only the fixed array's addresses
-// are used here; no mutable file fields or ftable.lock are accessed.
-extern struct {
-  struct spinlock lock;
-  struct file file[NFILE];
-} ftable;
 
 struct cpu cpus[NCPU];
 
@@ -366,14 +356,16 @@ exit(int status)
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
-    acquire(&p->lock);
+    // Only the owning process changes its descriptors. Readers in other
+    // processes cannot change this pointer while we take p->lock.
     struct file *f = p->ofile[fd];
+    if(f == 0)
+      continue;
+    acquire(&p->lock);
     p->ofile[fd] = 0;
     release(&p->lock);
     // fileclose() may sleep; detach the descriptor before calling it.
-    if(f){
-      fileclose(f);
-    }
+    fileclose(f);
   }
 
   begin_op();
@@ -682,7 +674,6 @@ collect_process_info(struct sysinfo *info)
 {
   struct proc *p, *parent;
   struct sysinfo_process *sp;
-  uint64 base = (uint64)ftable.file;
 
   if(info == 0)
     return -1;
@@ -708,15 +699,14 @@ collect_process_info(struct sysinfo *info)
       struct file *f = p->ofile[fd];
       if(f == 0)
         continue;
-      // Integer bounds/alignment checks avoid subtracting unrelated C
-      // pointers. Never dereference f, even if the pointer is invalid.
-      uint64 addr = (uint64)f;
-      if(addr < base || addr - base >= sizeof(ftable.file) ||
-         (addr - base) % sizeof(struct file) != 0)
+      // file.c owns the table layout and validates the pointer without
+      // dereferencing it or taking ftable.lock while p->lock is held.
+      int index = file_index_of(f);
+      if(index < 0 || index >= NFILE)
         goto bad;
       struct sysinfo_fd *sf = &sp->open_files[sp->open_file_count++];
       sf->fd = fd;
-      sf->file_index = (addr - base) / sizeof(struct file);
+      sf->file_index = index;
     }
     release(&p->lock);
 

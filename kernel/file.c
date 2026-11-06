@@ -180,3 +180,18 @@ filewrite(struct file *f, uint64 addr, int n)
   return ret;
 }
 
+// Return the slot in the fixed file table, or -1 for an invalid pointer.
+// This is the file_index_of() interface also used by File Management.
+// Addresses are immutable: no lock or file-field dereference is needed.
+int
+file_index_of(struct file *f)
+{
+  uint64 addr = (uint64)f;
+  uint64 base = (uint64)ftable.file;
+
+  if(addr < base || addr - base >= sizeof(ftable.file) ||
+     (addr - base) % sizeof(struct file) != 0)
+    return -1;
+  return (addr - base) / sizeof(struct file);
+}
+

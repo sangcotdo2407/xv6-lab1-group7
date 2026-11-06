@@ -14,9 +14,40 @@ import shutil
 import subprocess
 import tempfile
 import time
+import json
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def instrument_proc(source):
+    """Instrument forkret in a copy, or fail clearly if its structure changed."""
+    signatures = list(re.finditer(
+        r"(?m)^void[ \t]*\n[ \t]*forkret\([ \t]*void[ \t]*\)[ \t]*\n\{[ \t]*\n",
+        source))
+    if len(signatures) != 1:
+        raise RuntimeError("selftest needs exactly one void forkret(void) definition")
+    start = signatures[0].end()
+    end = re.search(r"(?m)^\}", source[start:])
+    if end is None:
+        raise RuntimeError("selftest cannot find the end of forkret()")
+    end = start + end.start()
+    body = source[start:end]
+    barriers = list(re.finditer(
+        r"(?m)^(?P<indent>[ \t]*)__sync_synchronize\(\);[ \t]*$", body))
+    fsinit = re.search(r"\bfsinit\(ROOTDEV\);", body)
+    initialized = re.search(r"\bfirst\s*=\s*0\s*;", body)
+    if (len(barriers) != 1 or fsinit is None or initialized is None or
+            not fsinit.start() < initialized.start() < barriers[0].start()):
+        raise RuntimeError("selftest needs fsinit, first=0 and one barrier in forkret()")
+    barrier = barriers[0]
+    body = (body[:barrier.end()] + "\n" + barrier.group("indent") +
+            "process_info_selftest();" + body[barrier.end():])
+    body = ('  if(strncmp(myproc()->name, "pinfo-worker", 16) == 0)\n'
+            '    process_info_test_worker();\n\n' + body)
+    declarations = ("static void process_info_selftest(void);\n"
+                    "static void process_info_test_worker(void);\n")
+    return declarations + source[:start] + body + source[end:]
 
 
 class Console:
@@ -91,20 +122,7 @@ def prepare(build, instrument):
         shutil.copy2(ROOT / name, build / name)
     if instrument:
         path = build / "kernel/proc.c"
-        source = path.read_text()
-        declarations = ("static void process_info_selftest(void);\n"
-                        "static void process_info_test_worker(void);\n")
-        source = declarations + source
-        anchor = "  // Still holding p->lock from scheduler."
-        assert source.count(anchor) == 1
-        source = source.replace(anchor,
-            '  if(strncmp(myproc()->name, "pinfo-worker", 16) == 0)\n'
-            '    process_info_test_worker();\n\n' + anchor)
-        anchor = "    __sync_synchronize();\n  }\n\n  usertrapret();"
-        assert source.count(anchor) == 1
-        source = source.replace(anchor,
-            "    __sync_synchronize();\n    process_info_selftest();\n  }\n\n"
-            "  usertrapret();")
+        source = instrument_proc(path.read_text())
         source += "\n" + (ROOT / "tests/process_info_kernel.c").read_text()
         path.write_text(source)
 
@@ -138,18 +156,36 @@ def main():
                         help="run the production kernel without test instrumentation")
     parser.add_argument("--quick-suite", action="store_true",
                         help="run all stock usertests -q cases instead of selected cases")
+    parser.add_argument("--toolprefix", help="explicit RISC-V prefix, e.g. riscv64-unknown-elf-")
     parser.add_argument("--output", type=Path, default=ROOT / "test-results/process-info")
     args = parser.parse_args()
     if any(cpu < 1 or cpu > 8 for cpu in args.cpus):
         parser.error("CPU counts must be between 1 and NCPU=8")
+    prefix = args.toolprefix or next((p for p in (
+        "riscv64-unknown-elf-", "riscv64-linux-gnu-", "riscv64-unknown-linux-gnu-")
+        if shutil.which(p + "gcc") and shutil.which(p + "objdump")), None)
+    if prefix is None:
+        parser.error("no RISC-V toolchain found; set --toolprefix")
     args.output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="xv6-process-info-") as directory:
         build = Path(directory)
         prepare(build, instrument=not args.stock)
         build_log = args.output / ("build-stock.log" if args.stock else "build-selftest.log")
         with build_log.open("w") as log:
-            subprocess.run(["make", "-j4", "kernel/kernel", "fs.img"], cwd=build,
+            subprocess.run(["make", "-j4", "TOOLPREFIX=" + prefix,
+                            "kernel/kernel", "fs.img"], cwd=build,
                            stdout=log, stderr=subprocess.STDOUT, check=True)
+        suffix = "stock" if args.stock else "selftest"
+        metadata = {"toolprefix": prefix}
+        for name, command in (("compiler", [prefix + "gcc", "--version"]),
+                              ("linker", [prefix + "ld", "--version"]),
+                              ("qemu", ["qemu-system-riscv64", "--version"])):
+            metadata[name] = subprocess.check_output(command, text=True).splitlines()[0]
+        metadata["usertests_program_headers"] = subprocess.check_output(
+            [prefix + "readelf", "-lW", "user/_usertests"], cwd=build, text=True)
+        (args.output / ("build-info-" + suffix + ".json")).write_text(
+            json.dumps(metadata, indent=2) + "\n")
+        print("Toolchain: " + metadata["compiler"], flush=True)
         print(f"PASS: build ({build_log})", flush=True)
         for cpus in args.cpus:
             # Every QEMU run starts from the same pristine filesystem image.
