@@ -15,8 +15,9 @@ static struct {
 } pit_buffer;
 static struct proc *pit_slots[NPROC];
 static struct file *pit_files[NFILE];
+static struct file *pit_exit_private;
 static struct spinlock pit_gate;
-static int pit_ready, pit_go, pit_done;
+static int pit_ready, pit_go, pit_done, pit_exit_go;
 
 static void
 pit_check(int ok, char *message)
@@ -147,8 +148,29 @@ process_info_test_worker(void)
     }
     yield();
   }
+  // Leave holes before/between live descriptors, including a live last slot.
+  // Two descriptors refer to the shared file; exit must drop BOTH references.
+  for(int fd = 1; fd < NOFILE; fd++){
+    p->trapframe->a0 = 0;
+    pit_check(sys_dup() == fd, "prepare duplicated exit descriptors");
+  }
+  for(int fd = 0; fd < NOFILE; fd++){
+    if(fd == 2 || fd == NOFILE-1)
+      continue;
+    p->trapframe->a0 = fd;
+    pit_check(sys_close() == 0, "prepare sparse exit descriptors");
+  }
+  pit_exit_private = filealloc();
+  pit_check(pit_exit_private != 0, "private exit file allocation");
+  pit_exit_private->type = FD_NONE;
+  acquire(&p->lock);
+  p->ofile[NOFILE/2] = pit_exit_private;
+  release(&p->lock);
+
   acquire(&pit_gate);
   pit_done = 1;
+  while(!pit_exit_go)
+    sleep(&pit_exit_go, &pit_gate);
   release(&pit_gate);
   exit(37);
 }
@@ -338,6 +360,25 @@ process_info_selftest(void)
     release(&pit_gate);
     yield();
   }
+  pit_collect();
+  sp = pit_find(pid);
+  int shared_index = file_index_of(shared);
+  pit_check(sp && sp->state == SLEEPING && sp->open_file_count == 3 &&
+            sp->open_files[0].fd == 2 &&
+            sp->open_files[0].file_index == shared_index &&
+            sp->open_files[1].fd == NOFILE/2 &&
+            sp->open_files[1].file_index == file_index_of(pit_exit_private) &&
+            sp->open_files[2].fd == NOFILE-1 &&
+            sp->open_files[2].file_index == shared_index,
+            "sparse exit snapshot preserves aliased file identity");
+  // Quiescent phase: the only other process is blocked at the exit gate.
+  // No process can mutate these file references until we release the worker.
+  pit_check(shared->ref == 3 && pit_exit_private->ref == 1,
+            "references before exit: parent, two aliases, private file");
+  acquire(&pit_gate);
+  pit_exit_go = 1;
+  wakeup(&pit_exit_go);
+  release(&pit_gate);
   do {
     yield();
     pit_collect();
@@ -345,6 +386,11 @@ process_info_selftest(void)
   } while(sp && sp->state != ZOMBIE);
   pit_check(sp && sp->open_file_count == 0 && sp->parent_pid == selfpid,
             "exit closes files and leaves zombie");
+  // The worker is a zombie; init is again the only runnable process and no
+  // file slot can be reused before these checks. No ftable layout is exposed.
+  pit_check(shared->ref == 1 && pit_exit_private->ref == 0,
+            "exit drops each FD reference once and frees the private file");
+  printf("PROCESS_INFO PASS: sparse exit, aliased FDs, exact reference cleanup\n");
   last = sp->scheduling_count;
   yield();
   pit_collect();

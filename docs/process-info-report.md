@@ -39,6 +39,12 @@ Việc sao chép `np->ofile[]` trong `fork()` vốn đã giữ `np->lock` nên k
 thêm khóa ở đó. Chủ sở hữu vẫn có thể đọc descriptor của mình không khóa vì
 xv6 không có nhiều thread cùng sửa một bảng descriptor của một tiến trình.
 
+Trong `exit()`, FD trống được bỏ qua trước khi lấy khóa. Với mỗi FD đang mở,
+hàm lấy/nhả `p->lock` đúng một lần để tháo con trỏ, rồi gọi `fileclose()` đúng
+một lần sau khi nhả khóa. Nếu hai FD cùng trỏ một `struct file`, phải giảm ref
+hai lần, mỗi lần cho một FD; không loại trùng theo `file_index`. Reader chỉ
+quan sát bảng, không thể sửa con trỏ giữa lần đọc của owner và lúc tháo FD.
+
 Thay đổi ở `file.c/defs.h` chỉ phục vụ helper đã được hai reviewer đề nghị;
 chữ ký giống PR #3. Không đổi `kernel/sysinfo.h`, các hàm `collect_*`, syscall
 dispatch hoặc user API. `sched()`, `yield()`, `fork()`, `swtch.S` và Makefile

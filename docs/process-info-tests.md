@@ -92,11 +92,45 @@ commit; các tên file chính:
 | Writer đồng thời | Con chạy 200 vòng gọi handler thật `sys_dup/sys_close/sys_pipe`; cha chụp tối thiểu 500 snapshot và kiểm tra bounds/bộ đếm không giảm. | PASS, 1/3 CPU; 500 snapshot mỗi lượt |
 | Rollback pipe | Hết fd, chỉ còn một fd trống, copyout với địa chỉ `MAXVA` thất bại, và cấp pipe thành công; đóng hết descriptor sau mỗi vòng. | PASS, 1/3 CPU |
 | Exit/wait | Con thoát, `ZOMBIE` không còn fd; bộ đếm zombie ổn định; `wait()` thu hồi đúng PID; PID biến mất khỏi snapshot. | PASS, 1/3 CPU |
+| Exit với FD trống/alias | Trước exit con giữ FD 2/15 cùng một file, FD 8 là file riêng, các FD khác trống. Snapshot có đúng 3 FD và index khớp; sau exit ref file chung giảm 3→1, file riêng 1→0, không panic hoặc kẹt khóa. | PASS, 1/3 CPU; lượt review mới nhất |
 
 Các ca hồi quy liên quan trong 60 ca xv6 gồm `forktest`, `preempt`, `exitwait`,
 `reparent`, `reparent2`, `twochildren`, `forkfork`, `forkforkfork`, `sharedfd`,
 `pipe1`, `killstatus`, `openiput`, `exitiput`, `sbrkfail` và các ca file/memory.
 `usertests` cũng kiểm tra số trang rảnh trước/sau suite.
+
+### Chạy lại theo review mới nhất tại `6bac13e`
+
+Lượt này giữ nguyên toàn bộ kernel production tại `6bac13e`, chỉ bổ sung ca
+exit/alias nêu trên vào kernel selftest và làm rõ tài liệu. Không lấy kết quả
+PASS cũ để thay cho việc chạy lại. Log mới nằm riêng trong
+`test-results/pr4-latest-review/`; log tích hợp và đối chứng ELF ở phần sau là
+của lượt trước, không phải lượt chạy mới.
+
+| Lượt chạy mới | CPU | Build | Selftest | `forktest` | `usertests -q` |
+| --- | ---: | --- | --- | --- | --- |
+| Gắn selftest mới | 1 | PASS | PASS | PASS | 60 ca PASS |
+| Gắn selftest mới | 3 | PASS | PASS | PASS | 60 ca PASS |
+| Production `6bac13e` | 1 | PASS | Không gắn | PASS | 60 ca PASS |
+| Production `6bac13e` | 3 | PASS | Không gắn | PASS | 60 ca PASS |
+
+4 unit test instrumentation PASS. Cả bốn log có `fork test OK` và
+`ALL TESTS PASSED`; hai log selftest có thêm `PROCESS_INFO ALL PASSED` và
+`sparse exit, aliased FDs, exact reference cleanup`. Không có kernel panic.
+`git diff origin/main --check` đạt cho toàn bộ thay đổi trong nhánh và working
+tree. Linker vẫn có cảnh báo RWX đã ghi ở lượt trước, không có lỗi biên dịch.
+
+Ca mới chặn worker trước khi exit để xác nhận FD 0/1 trống, có lỗ giữa các FD
+và slot cuối còn mở; snapshot phải giữ hai FD trùng file_index. Sau đó cho con
+exit, xác nhận không còn FD, ref chính xác, bộ đếm zombie ổn định và wait thu
+hồi được con. Đọc ref trực tiếp chỉ ở hai pha không có writer: worker đang bị
+chặn hoặc đã ZOMBIE, còn init là tiến trình duy nhất có thể thay đổi bảng file.
+Không thêm extern ftable hoặc API truy cập reference count vào production.
+
+`usertests -q` có cả `copyout`, `sharedfd`, `exitwait`, `exitiput` và `openiput`;
+các ca inode bổ sung kiểm tra đường đóng file thực tế ngoài các file FD_NONE
+của selftest. Toolchain vẫn là unknown-elf 13.2/ld 2.42/QEMU 8.2.2; không
+diễn giải kết quả này thành kết quả chạy trên linux-gnu của reviewer.
 
 ## Review và giới hạn
 

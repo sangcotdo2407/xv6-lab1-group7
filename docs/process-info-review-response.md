@@ -1,12 +1,58 @@
 # Xử lý review PR #4 — Process Management & CPU Scheduling
 
+## Lượt review mới nhất tại `6bac13e`
+
+Đã đọc [review của Vũ ngày 06/11/2026](https://github.com/sangcotdo2407/xv6-lab1-group7/pull/4#issuecomment-6680394407),
+các comment trước đó (kể cả bản cập nhật của comment Vũ), danh sách review và
+review threads. Tại thời điểm đối chiếu, yêu cầu “Request Changes” nằm trong
+Conversation; không có formal review hoặc inline thread/reply. Nội dung vẫn
+được xử lý đầy đủ như yêu cầu sửa của reviewer.
+
+Đối chiếu trực tiếp [blob proc.c tại head trên GitHub](https://github.com/sangcotdo2407/xv6-lab1-group7/blob/6bac13e3af7e76a5bf40224db72c07cb7bcce615/kernel/proc.c#L358),
+không chỉ đọc patch. Blob khớp mã nguồn local; không có bản sửa kernel chưa
+commit che khuất lỗi mà reviewer đang báo.
+
+| Nhận xét | Nguyên nhân và cách xử lý |
+| --- | --- |
+| `exit()` acquire hai lần | Không có trong head: vòng lặp chỉ có một `acquire(&p->lock)`. Đoạn trích khớp với việc đọc cả dòng `-acquire` đã xóa lẫn dòng `+acquire` mới trong diff `5e60f38..6bac13e`. Giữ nguyên mã đúng, không thêm lần lấy khóa. |
+| FD trống `continue` mà thiếu release | Không có trong head: `if(f == 0) continue` đứng trước acquire. Nhánh này không giữ khóa nên không được gọi release. |
+| `fileclose(f)` hai lần | Không có trong head: lời gọi trong nhánh `if(f)` cũ đã bị xóa, chỉ còn một lời gọi sau release. Mỗi FD phải đóng một lần; nhiều FD cùng trỏ một file vẫn phải giảm ref tương ứng với từng FD. |
+| Báo cáo mâu thuẫn về file.c/defs.h | Báo cáo ở head đã liệt kê helper trong cả bảng file và phần phạm vi. Mô tả PR trên GitHub còn câu cũ “Giữ nguyên ... defs.h” và “Collector tham chiếu ftable global”. Bổ sung giải thích luồng exit trong báo cáo và chuẩn bị nội dung cập nhật mô tả PR bên dưới, không tự sửa PR. |
+| Phân biệt hai toolchain/copyout | Giữ kết quả unknown-elf của tác giả tách riêng kết quả linux-gnu do reviewer báo. Thí nghiệm `ld -N` chỉ mô phỏng text ghi được, không phải tái hiện chính xác lỗi scause 0xc. Máy hiện tại chưa có linux-gnu. |
+| Regex chèn selftest cần kiểm tra cấu trúc | Giữ các guard và 4 unit test hiện có; không đổi mã instrumentation hoặc cơ chế boot production. |
+| Chạy lại selftest, forktest, usertests trên 1/3 CPU | Bổ sung ca exit với FD 0/1 trống, FD 2/15 cùng một file và FD 8 giữ file riêng. Chụp snapshot khi con bị chặn, kiểm tra ref ở pha không có writer, cho con exit rồi kiểm tra ref 3→1 và 1→0, zombie/wait. Chạy lại cả kernel gắn selftest và production; kết quả/log ghi trong process-info-tests.md. |
+
+Không sửa vòng lặp `exit()` theo mẫu acquire mọi FD vì mã hiện tại đã đáp ứng
+tất cả yêu cầu an toàn và đã áp dụng tối ưu bỏ qua FD trống được Thi đề nghị.
+Không thay đổi kernel hoặc giao diện chung trong lượt xử lý này. Bản sửa cục
+bộ bổ sung test hồi quy và làm rõ tài liệu; không push, sửa PR, đóng thread
+hoặc thay trạng thái review.
+
+Kết quả lượt này: 4 unit test PASS; build, forktest và đủ 60 ca usertests -q
+PASS trên QEMU 1/3 CPU ở cả selftest và production. Selftest mới PASS trên
+cả hai cấu hình, không panic. Đã rà toàn bộ diff từ main, không chỉ diff local;
+fork/sched/yield/sleep/wakeup/forkret giữ nguyên mã gốc và scheduler chỉ thêm
+một phép tăng bộ đếm. Chưa có toolchain linux-gnu để xác minh độc lập lỗi
+copyout của reviewer. Sẵn sàng review lại bản sửa cục bộ và đối chiếu nhận xét
+exit với blob đã dẫn; chưa cập nhật PR trên GitHub.
+
+Các câu cần thay trong mô tả PR khi được phép cập nhật:
+
+> Giữ nguyên kernel/sysinfo.h và chữ ký collect_*. Thêm khai báo/định nghĩa
+> file_index_of() tại defs.h/file.c theo giao diện PR #3, kiểm tra biên và căn
+> chỉnh mà không dereference hay lấy ftable.lock. Không còn extern ftable tại
+> proc.c. sysfile.c chỉ bổ sung đồng bộ writer ofile[]. Các module syscall/file
+> đã được kiểm chứng trong bản ghép tạm, chưa merge vào nhánh này.
+
+## Lượt review trước tại `5e60f38`
+
 Đối chiếu hai phản hồi tại head `5e60f38`:
 
 - [Hồ Sỹ Thi / thihovn](https://github.com/sangcotdo2407/xv6-lab1-group7/pull/4#issuecomment-6676844238).
 - [Mai Khắc Hoàng Vũ / UNKN0W-Git](https://github.com/sangcotdo2407/xv6-lab1-group7/pull/4#issuecomment-6677182364).
 
 Đã đọc toàn bộ nội dung hai comment, danh sách reviews, review threads và
-discussion timeline. Hiện có hai comment trên Conversation; danh sách review
+discussion timeline. Khi xử lý lượt trước có hai comment trên Conversation; danh sách review
 và inline thread đều rỗng, không có Request Changes chính thức hoặc reply trong
 thread bị bỏ sót. Việc đối chiếu không tự gửi reply, đóng thread hoặc thay trạng
 thái review.
