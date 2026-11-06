@@ -52,10 +52,12 @@ procinit(void)
   
   initlock(&pid_lock, "nextpid");
   initlock(&wait_lock, "wait_lock");
-  for(p = proc; p < &proc[NPROC]; p++) {
-      initlock(&p->lock, "proc");
-      p->state = UNUSED;
-      p->kstack = KSTACK((int) (p - proc));
+  for (p = proc; p < &proc[NPROC]; p++) {
+  initlock(&p->lock, "proc");
+  initlock(&p->ofile_lock, "ofile_lock");
+
+  p->state = UNUSED;
+  p->kstack = KSTACK((int)(p - proc));
   }
 }
 
@@ -305,9 +307,14 @@ fork(void)
   np->trapframe->a0 = 0;
 
   // increment reference counts on open file descriptors.
-  for(i = 0; i < NOFILE; i++)
-    if(p->ofile[i])
+  acquire(&p->ofile_lock);
+
+  for (i = 0; i < NOFILE; i++) {
+    if (p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
+  }
+  release(&p->ofile_lock);
+  
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
@@ -352,14 +359,23 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
+    
+  // Detach all open files under ofile_lock.
+  struct file *ofile_to_close[NOFILE];
 
-  // Close all open files.
-  for(int fd = 0; fd < NOFILE; fd++){
-    if(p->ofile[fd]){
-      struct file *f = p->ofile[fd];
-      fileclose(f);
-      p->ofile[fd] = 0;
-    }
+  acquire(&p->ofile_lock);
+
+  for (int fd = 0; fd < NOFILE; fd++) {
+    ofile_to_close[fd] = p->ofile[fd];
+    p->ofile[fd] = 0;
+  }
+
+  release(&p->ofile_lock);
+
+  // Close files outside the lock.
+  for (int fd = 0; fd < NOFILE; fd++) {
+    if (ofile_to_close[fd])
+      fileclose(ofile_to_close[fd]);
   }
 
   begin_op();
@@ -690,29 +706,60 @@ procdump(void)
   }
 }
 
+
 int
 collect_process_info(struct sysinfo *info)
 {
+  struct proc *p;
+
+  if (info == 0)
+    return -1;
+
   info->process_count = 0;
-  acquire(&wait_lock);            // thu tu khoa: wait_lock -> p->lock (nhu wait())
-  for(struct proc *p = proc; p < &proc[NPROC]; p++){
+
+  acquire(&wait_lock);
+
+  for (p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
-    if(p->state != UNUSED){
-      struct sysinfo_process *e = &info->processes[info->process_count++];
-      e->pid = p->pid; e->state = p->state;
+
+    if (p->state != UNUSED) {
+      struct sysinfo_process *e =
+        &info->processes[info->process_count++];
+
+      e->pid = p->pid;
+      e->state = p->state;
       e->parent_pid = p->parent ? p->parent->pid : 0;
       e->scheduling_count = p->scheduling_count;
       e->open_file_count = 0;
-      for(int fd = 0; fd < NOFILE; fd++)
-        if(p->ofile[fd]){
-          e->open_files[e->open_file_count].fd = fd;
-          e->open_files[e->open_file_count].file_index = file_index_of(p->ofile[fd]);
-          e->open_file_count++;
-        }
+
+      // Protect ofile[] while reading.
+      acquire(&p->ofile_lock);
+
+      for (int fd = 0; fd < NOFILE; fd++) {
+        struct file *f = p->ofile[fd];
+
+        if (f == 0)
+          continue;
+
+        if (e->open_file_count >= NOFILE)
+          break;
+
+        e->open_files[e->open_file_count].fd = fd;
+        e->open_files[e->open_file_count].file_index =
+          file_index_of(f);
+
+        e->open_file_count++;
+      }
+
+      release(&p->ofile_lock);
     }
+
     release(&p->lock);
   }
+
   release(&wait_lock);
+
   return 0;
 }
+
 

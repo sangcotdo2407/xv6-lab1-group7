@@ -1,0 +1,546 @@
+diff --git a/Makefile b/Makefile
+index 0e4a660..50e3dcf 100644
+--- a/Makefile
++++ b/Makefile
+@@ -118,6 +118,7 @@ mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
+ UPROGS=\
+ 	$U/_cat\
+ 	$U/_echo\
++	$U/_filetest\
+ 	$U/_forktest\
+ 	$U/_grep\
+ 	$U/_init\
+diff --git a/kernel/file.c b/kernel/file.c
+index 425fcc6..cb11565 100644
+--- a/kernel/file.c
++++ b/kernel/file.c
+@@ -13,7 +13,8 @@
+ #include "stat.h"
+ #include "proc.h"
+ #include "sysinfo.h"
+-extern struct proc proc[NPROC];
++
++extern struct proc proc[NPROC];   // process table, defined in proc.c
+ 
+ struct devsw devsw[NDEV];
+ struct {
+@@ -182,45 +183,81 @@ filewrite(struct file *f, uint64 addr, int n)
+   return ret;
+ }
+ 
++// Index of f in ftable.file[], or -1 if f does not point into the table.
++// Only reads the pointer value, so it needs no lock.
+ int
+ file_index_of(struct file *f)
+ {
+-  return f - ftable.file;
++  if(f < ftable.file || f >= ftable.file + NFILE)
++    return -1;
++  return (int)(f - ftable.file);
+ }
+ 
++// Fill info->open_file_count and info->files[] for sysinfo().
++//
++// A file object is "open" when ftable.file[i].ref > 0.  For each one we
++// record its index, type, permissions and ref, plus the distinct PIDs of the
++// processes that hold it in some ofile[] slot.
++//
++// info is supplied by sys_sysinfo() and must not live on the kernel stack
++// (struct sysinfo is far larger than a kernel stack).  Only the file part
++// of *info is written; the files[] array is cleared first so unused entries
++// read as 0.
++//
++// Locks: ftable.lock and any p->lock are never held together, so this adds no
++// lock ordering constraint.  Nothing here calls copyout().
++//   phase 1: under ftable.lock, copy every open file object.
++//   phase 2: under each non-UNUSED p->lock in turn, scan p->ofile[].
++// The two phases are not atomic: a file opened or closed in between can be
++// missed, or leave a ref that disagrees with the pid list.
++//
++// Returns 0 on success, -1 if info is null.
+ int
+ collect_file_info(struct sysinfo *info)
+ {
+-  int pos[NFILE];
++  int slot[NFILE];      // ftable index -> position in info->files[], or -1
++  int n = 0;
++  int i;
++  struct proc *p;
++
++  if(info == 0)
++    return -1;
++
++  memset(info->files, 0, sizeof(info->files));
+   info->open_file_count = 0;
+ 
+   acquire(&ftable.lock);
+-  for(int i = 0; i < NFILE; i++){
++  for(i = 0; i < NFILE; i++){
+     struct file *f = &ftable.file[i];
+-    pos[i] = -1;
+-    if(f->ref > 0){
+-      struct sysinfo_file *e = &info->files[info->open_file_count];
+-      e->file_index = i;
+-      e->type = f->type;
+-      e->readable = f->readable;
+-      e->writable = f->writable;
+-      e->ref = f->ref;
+-      e->process_count = 0;
+-      pos[i] = info->open_file_count++;
+-    }
++    slot[i] = -1;
++    if(f->ref <= 0)
++      continue;
++    info->files[n].file_index = i;
++    info->files[n].type = f->type;
++    info->files[n].readable = f->readable;
++    info->files[n].writable = f->writable;
++    info->files[n].ref = f->ref;
++    slot[i] = n++;
+   }
+-  release(&ftable.lock);          // nhả ftable.lock TRƯỚC khi lấy p->lock
++  release(&ftable.lock);
++  info->open_file_count = n;
+ 
+-  for(struct proc *p = proc; p < &proc[NPROC]; p++){
++  for(p = proc; p < &proc[NPROC]; p++){
+     acquire(&p->lock);
+     if(p->state != UNUSED){
+-      for(int fd = 0; fd < NOFILE; fd++){
+-        if(!p->ofile[fd]) continue;
+-        int k = pos[file_index_of(p->ofile[fd])];
+-        if(k < 0) continue;       // file mở sau lúc chụp
+-        struct sysinfo_file *e = &info->files[k];
+-        if(e->process_count == 0 || e->pids[e->process_count - 1] != p->pid)
+-          e->pids[e->process_count++] = p->pid;   // chống trùng PID
++      for(i = 0; i < NOFILE; i++){
++        struct sysinfo_file *sf;
++        int idx = file_index_of(p->ofile[i]);
++
++        if(idx < 0 || slot[idx] < 0)
++          continue;     // empty fd, or the file was opened after phase 1
++        sf = &info->files[slot[idx]];
++        // One process is scanned completely before the next, so a pid
++        // already stored for this file can only be the last one.
++        if(sf->process_count > 0 && sf->pids[sf->process_count - 1] == p->pid)
++          continue;
++        if(sf->process_count < NPROC)
++          sf->pids[sf->process_count++] = p->pid;
+       }
+     }
+     release(&p->lock);
+diff --git a/user/filetest.c b/user/filetest.c
+new file mode 100644
+index 0000000..9846965
+--- /dev/null
++++ b/user/filetest.c
+@@ -0,0 +1,409 @@
++// filetest.c - tests for the file half of sysinfo(): the open-file list that
++// collect_file_info() builds (open_file_count, files[], ref, pids[]).
++// Author: Mai Khac Hoang Vu (24120183).
++//
++// Needs only the sysinfo system call.  It does NOT use info.processes[]:
++// the file this process just opened is recognised as the entry that was not
++// in the snapshot taken before the open (see mark() / find_new()), and the
++// child's pid comes from fork().
++//
++// Makefile: $U/_filetest in UPROGS.   Run in xv6:  $ filetest
++
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "kernel/fcntl.h"
++#include "kernel/param.h"
++#include "kernel/sysinfo.h"
++#include "user/user.h"
++
++// enum values of struct file's type in kernel/file.h
++#define T_PIPE    1   // FD_PIPE
++#define T_INODE   2   // FD_INODE
++
++#define TMPFILE "filetest.tmp"
++
++static struct sysinfo si;      // ~38 KB: static, never on the user stack
++static char before[NFILE];     // file_index values present at the last mark()
++static int failures;
++
++#define CHECK(cond, msg) do { \
++  if(cond){ printf("  ok   %s\n", msg); } \
++  else    { printf("  FAIL %s (line %d)\n", msg, __LINE__); failures++; } \
++} while(0)
++
++// Take a snapshot into si.  Returns 0 on success.
++static int
++snap(void)
++{
++  if(sysinfo(&si) < 0){
++    printf("  FAIL sysinfo() returned -1\n");
++    failures++;
++    return -1;
++  }
++  return 0;
++}
++
++// Snapshot and remember which file objects exist right now.
++static int
++mark(void)
++{
++  memset(before, 0, sizeof(before));
++  if(snap() < 0)
++    return -1;
++  for(int i = 0; i < si.open_file_count; i++){
++    int idx = si.files[i].file_index;
++    if(idx >= 0 && idx < NFILE)
++      before[idx] = 1;
++  }
++  return si.open_file_count;
++}
++
++// Number of open file objects now.
++static int
++count_now(void)
++{
++  return snap() < 0 ? -1 : si.open_file_count;
++}
++
++// Entry of si for file_index idx (after a snapshot), or 0.
++static struct sysinfo_file *
++by_index(int idx)
++{
++  for(int i = 0; i < si.open_file_count; i++)
++    if(si.files[i].file_index == idx)
++      return &si.files[i];
++  return 0;
++}
++
++// Snapshot, then return the entry for idx (0 if it is not open).
++static struct sysinfo_file *
++lookup(int idx)
++{
++  if(snap() < 0)
++    return 0;
++  return by_index(idx);
++}
++
++// Snapshot and return the file_index of the one object that was not present
++// at the last mark(); -1 if there is none or more than one.
++static int
++find_new(void)
++{
++  int found = -1, n = 0;
++  if(snap() < 0)
++    return -1;
++  for(int i = 0; i < si.open_file_count; i++){
++    int idx = si.files[i].file_index;
++    if(idx >= 0 && idx < NFILE && !before[idx]){
++      found = idx;
++      n++;
++    }
++  }
++  return n == 1 ? found : -1;
++}
++
++static int
++has_pid(struct sysinfo_file *f, int pid)
++{
++  for(int i = 0; i < f->process_count; i++)
++    if(f->pids[i] == pid)
++      return 1;
++  return 0;
++}
++
++static int
++pids_distinct(struct sysinfo_file *f)
++{
++  for(int i = 0; i < f->process_count; i++)
++    for(int j = i + 1; j < f->process_count; j++)
++      if(f->pids[i] == f->pids[j])
++        return 0;
++  return 1;
++}
++
++// Sanity of the whole snapshot in si.
++static int
++snapshot_ok(void)
++{
++  if(si.open_file_count < 0 || si.open_file_count > NFILE)
++    return 0;
++  for(int i = 0; i < si.open_file_count; i++){
++    struct sysinfo_file *f = &si.files[i];
++    if(f->file_index < 0 || f->file_index >= NFILE)
++      return 0;
++    if(f->ref < 1 || f->process_count < 0 || f->process_count > NPROC)
++      return 0;
++    if(!pids_distinct(f))
++      return 0;
++    for(int j = i + 1; j < si.open_file_count; j++)
++      if(si.files[j].file_index == f->file_index)
++        return 0;
++  }
++  // entries after open_file_count must be zeroed
++  for(int i = si.open_file_count; i < NFILE; i++)
++    if(si.files[i].file_index != 0 || si.files[i].ref != 0 ||
++       si.files[i].process_count != 0)
++      return 0;
++  return 1;
++}
++
++// Fork a child that blocks until the parent writes to sync[1].
++// Returns the child's pid (parent) or -1.
++static int
++fork_waiter(int sync[2])
++{
++  if(pipe(sync) < 0)
++    return -1;
++  int pid = fork();
++  if(pid == 0){
++    char c;
++    close(sync[1]);
++    read(sync[0], &c, 1);
++    exit(0);
++  }
++  return pid;
++}
++
++static void
++release_waiter(int sync[2])
++{
++  write(sync[1], "x", 1);
++  wait(0);
++  close(sync[0]);
++  close(sync[1]);
++}
++
++// 1. A new open() adds exactly one object with the right fields.
++static void
++test_open(void)
++{
++  printf("test 1: open a new file\n");
++  int base = mark();
++  int fd = open("README", O_RDONLY);
++  int idx = find_new();
++  struct sysinfo_file *f = by_index(idx);
++  CHECK(f != 0, "one new object appears");
++  CHECK(si.open_file_count == base + 1, "open_file_count +1");
++  if(f){
++    CHECK(f->type == T_INODE, "type is FD_INODE");
++    CHECK(f->readable == 1 && f->writable == 0, "O_RDONLY: readable only");
++    CHECK(f->ref == 1, "ref == 1");
++    CHECK(f->process_count == 1 && f->pids[0] == getpid(), "pids == {self}");
++  }
++  close(fd);
++  CHECK(lookup(idx) == 0, "close: object is gone");
++  CHECK(count_now() == base, "close: open_file_count back to base");
++}
++
++// 2. Permissions are copied from the open mode.
++static void
++test_modes(void)
++{
++  printf("test 2: readable / writable flags\n");
++  mark();
++  int fd = open(TMPFILE, O_CREATE | O_RDWR);
++  struct sysinfo_file *f = by_index(find_new());
++  CHECK(f && f->readable == 1 && f->writable == 1, "O_RDWR: readable and writable");
++  close(fd);
++
++  mark();
++  fd = open(TMPFILE, O_WRONLY);
++  f = by_index(find_new());
++  CHECK(f && f->readable == 0 && f->writable == 1, "O_WRONLY: writable only");
++  close(fd);
++  unlink(TMPFILE);
++}
++
++// 3. Same path opened twice -> two separate objects.
++static void
++test_open_twice(void)
++{
++  printf("test 3: open the same path twice\n");
++  int base = mark();
++  int fd1 = open("README", O_RDONLY);
++  int i1 = find_new();
++  mark();
++  int fd2 = open("README", O_RDONLY);
++  int i2 = find_new();
++  CHECK(i1 >= 0 && i2 >= 0 && i1 != i2, "two different file_index");
++  CHECK(si.open_file_count == base + 2, "open_file_count +2");
++  struct sysinfo_file *f1 = lookup(i1);
++  CHECK(f1 && f1->ref == 1, "first object: ref == 1");
++  struct sysinfo_file *f2 = by_index(i2);
++  CHECK(f2 && f2->ref == 1, "second object: ref == 1");
++  close(fd1);
++  close(fd2);
++  CHECK(count_now() == base, "closed both: back to base");
++}
++
++// 4. dup() raises ref, not the object count nor the pid count.
++static void
++test_dup(void)
++{
++  printf("test 4: dup\n");
++  int base = mark();
++  int fd = open("README", O_RDONLY);
++  int idx = find_new();
++  int fd2 = dup(fd);
++  struct sysinfo_file *f = lookup(idx);
++  CHECK(si.open_file_count == base + 1, "dup adds no file object");
++  CHECK(f && f->ref == 2, "ref == 2");
++  CHECK(f && f->process_count == 1, "process_count == 1 (ref != process_count)");
++  int fd3 = dup(fd);
++  f = lookup(idx);
++  CHECK(f && f->ref == 3 && f->process_count == 1, "second dup: ref == 3, still 1 pid");
++  close(fd2);
++  f = lookup(idx);
++  CHECK(f && f->ref == 2, "close one dup: ref == 2");
++  close(fd);
++  f = lookup(idx);
++  CHECK(f && f->ref == 1, "close another: ref == 1, still open");
++  close(fd3);
++  CHECK(lookup(idx) == 0, "close last fd: object released");
++  CHECK(count_now() == base, "open_file_count back to base");
++}
++
++// 5. fork(): parent and child share the object.
++static void
++test_fork(void)
++{
++  printf("test 5: fork shares the object\n");
++  int me = getpid();
++  mark();
++  int fd = open("README", O_RDONLY);
++  int idx = find_new();
++  int sync[2];
++  int child = fork_waiter(sync);
++  if(child < 0){
++    printf("  FAIL fork\n");
++    failures++;
++    close(fd);
++    return;
++  }
++  struct sysinfo_file *f = lookup(idx);
++  CHECK(f && f->ref == 2, "ref == 2 after fork");
++  if(f){
++    CHECK(f->process_count == 2, "process_count == 2");
++    CHECK(has_pid(f, me) && has_pid(f, child), "pids == {parent, child}");
++    CHECK(pids_distinct(f), "no duplicated pid");
++  }
++  release_waiter(sync);
++  f = lookup(idx);
++  CHECK(f && f->ref == 1 && f->process_count == 1, "child exited: ref 1, one pid");
++  close(fd);
++  CHECK(lookup(idx) == 0, "parent closed: object released");
++}
++
++// 6. Several fds in several processes: ref counts fds, process_count counts pids.
++static void
++test_fork_dup(void)
++{
++  printf("test 6: fork + dup (many fds, one object)\n");
++  mark();
++  int fd = open("README", O_RDONLY);
++  int idx = find_new();
++  int fd2 = dup(fd);
++  int sync[2];
++  int child = fork_waiter(sync);
++  if(child < 0){
++    printf("  FAIL fork\n");
++    failures++;
++    close(fd);
++    close(fd2);
++    return;
++  }
++  struct sysinfo_file *f = lookup(idx);
++  CHECK(f && f->ref == 4, "ref == 4 (2 fds x 2 processes)");
++  CHECK(f && f->process_count == 2, "process_count == 2, not 4");
++  CHECK(f && pids_distinct(f), "pids not duplicated");
++  release_waiter(sync);
++  f = lookup(idx);
++  CHECK(f && f->ref == 2 && f->process_count == 1, "child exited: ref 2, one pid");
++  close(fd);
++  close(fd2);
++  CHECK(lookup(idx) == 0, "all closed: object released");
++}
++
++// 7. pipe(): two objects, one per end.
++static void
++test_pipe(void)
++{
++  printf("test 7: pipe ends\n");
++  int base = mark();
++  int p[2];
++  pipe(p);
++  CHECK(count_now() == base + 2, "pipe adds two objects");
++  int rd = -1, wr = -1, n = 0;
++  for(int i = 0; i < si.open_file_count; i++){
++    struct sysinfo_file *f = &si.files[i];
++    if(f->file_index < 0 || f->file_index >= NFILE || before[f->file_index])
++      continue;
++    n++;
++    if(f->type == T_PIPE && f->readable && !f->writable)
++      rd = f->file_index;
++    if(f->type == T_PIPE && !f->readable && f->writable)
++      wr = f->file_index;
++  }
++  CHECK(n == 2, "exactly two new objects");
++  CHECK(rd >= 0 && wr >= 0 && rd != wr, "one read end and one write end, both FD_PIPE");
++  close(p[0]);
++  close(p[1]);
++  CHECK(count_now() == base, "both ends closed: back to base");
++}
++
++// 8. Fill this process's descriptor table, then check the snapshot is sane.
++static void
++test_limits(void)
++{
++  printf("test 8: fill NOFILE descriptors\n");
++  int fds[NOFILE], n = 0;
++  int base = count_now();
++  while(n < NOFILE){
++    int fd = open("README", O_RDONLY);
++    if(fd < 0)
++      break;
++    fds[n++] = fd;
++  }
++  CHECK(n > 0 && n < NOFILE, "open() fails once the fd table is full");
++  CHECK(count_now() == base + n, "open_file_count == base + successful opens");
++  CHECK(snapshot_ok(), "indexes < NFILE, ref >= 1, pids distinct, tail zeroed");
++  for(int i = 0; i < n; i++)
++    close(fds[i]);
++  CHECK(count_now() == base, "all closed: back to base");
++}
++
++// 9. Repeated calls: results are stable and always well formed.
++static void
++test_repeat(void)
++{
++  printf("test 9: repeated sysinfo() calls\n");
++  int c0 = count_now();
++  int same = 1, ok = 1;
++  for(int i = 0; i < 50; i++){
++    if(count_now() != c0)
++      same = 0;
++    if(!snapshot_ok())
++      ok = 0;
++  }
++  CHECK(same, "50 calls, same open_file_count");
++  CHECK(ok, "every snapshot well formed");
++}
++
++int
++main(void)
++{
++  test_open();
++  test_modes();
++  test_open_twice();
++  test_dup();
++  test_fork();
++  test_fork_dup();
++  test_pipe();
++  test_limits();
++  test_repeat();
++  if(failures == 0)
++    printf("filetest: ALL PASSED\n");
++  else
++    printf("filetest: %d FAILED\n", failures);
++  exit(failures != 0);
++}

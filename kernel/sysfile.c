@@ -39,15 +39,20 @@ argfd(int n, int *pfd, struct file **pf)
 static int
 fdalloc(struct file *f)
 {
-  int fd;
   struct proc *p = myproc();
+  int fd;
 
-  for(fd = 0; fd < NOFILE; fd++){
-    if(p->ofile[fd] == 0){
+  acquire(&p->ofile_lock);
+
+  for (fd = 0; fd < NOFILE; fd++) {
+    if (p->ofile[fd] == 0) {
       p->ofile[fd] = f;
+      release(&p->ofile_lock);
       return fd;
     }
   }
+
+  release(&p->ofile_lock);
   return -1;
 }
 
@@ -100,9 +105,24 @@ sys_close(void)
   int fd;
   struct file *f;
 
-  if(argfd(0, &fd, &f) < 0)
+  argint(0, &fd);
+
+  if(fd < 0 || fd >= NOFILE)
     return -1;
-  myproc()->ofile[fd] = 0;
+
+  struct proc *p = myproc();
+
+  acquire(&p->lock);
+  f = p->ofile[fd];
+
+  if(f == 0){
+    release(&p->lock);
+    return -1;
+  }
+
+  p->ofile[fd] = 0;
+  release(&p->lock);
+
   fileclose(f);
   return 0;
 }
