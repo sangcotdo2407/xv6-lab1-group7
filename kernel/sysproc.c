@@ -93,9 +93,12 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+// The snapshot exceeds the one-page kernel stack. A sleeplock serializes
+// callers; collectors release all table spinlocks before copyout().
 static struct sysinfo kinfo;
 static struct sleeplock kinfo_lock = { .lk = { .name = "sysinfo" }, .name = "sysinfo" };
- 
+
 uint64
 sys_sysinfo(void)
 {

@@ -17,7 +17,6 @@
 extern struct proc proc[NPROC];
 
 struct devsw devsw[NDEV];
-
 struct {
   struct spinlock lock;
   struct file file[NFILE];
@@ -30,65 +29,71 @@ fileinit(void)
 }
 
 // Allocate a file structure.
-struct file *
+struct file*
 filealloc(void)
 {
   struct file *f;
 
   acquire(&ftable.lock);
-
-  for (f = ftable.file; f < ftable.file + NFILE; f++) {
-    if (f->ref == 0) {
+  for(f = ftable.file; f < ftable.file + NFILE; f++){
+    if(f->ref == 0){
+      f->type = FD_NONE;
+      f->readable = 0;
+      f->writable = 0;
       f->ref = 1;
       release(&ftable.lock);
       return f;
     }
   }
-
   release(&ftable.lock);
   return 0;
 }
 
+// Publish snapshot fields together, using the collector's lock.
+// The caller owns this reference and initializes the inode/pipe separately.
+void
+filesetinfo(struct file *f, int type, int readable, int writable)
+{
+  acquire(&ftable.lock);
+  f->type = type;
+  f->readable = readable != 0;
+  f->writable = writable != 0;
+  release(&ftable.lock);
+}
+
 // Increment ref count for file f.
-struct file *
+struct file*
 filedup(struct file *f)
 {
   acquire(&ftable.lock);
-
-  if (f->ref < 1)
+  if(f->ref < 1)
     panic("filedup");
-
   f->ref++;
-
   release(&ftable.lock);
   return f;
 }
 
-// Close file f. (Decrement ref count, close when reaches 0.)
+// Close file f.  (Decrement ref count, close when reaches 0.)
 void
 fileclose(struct file *f)
 {
   struct file ff;
 
   acquire(&ftable.lock);
-
-  if (f->ref < 1)
+  if(f->ref < 1)
     panic("fileclose");
-
-  if (--f->ref > 0) {
+  if(--f->ref > 0){
     release(&ftable.lock);
     return;
   }
-
   ff = *f;
   f->ref = 0;
   f->type = FD_NONE;
-
   release(&ftable.lock);
 
-  if (ff.type == FD_PIPE) {
+  if(ff.type == FD_PIPE){
     pipeclose(ff.pipe, ff.writable);
-  } else if (ff.type == FD_INODE || ff.type == FD_DEVICE) {
+  } else if(ff.type == FD_INODE || ff.type == FD_DEVICE){
     begin_op();
     iput(ff.ip);
     end_op();
@@ -103,17 +108,14 @@ filestat(struct file *f, uint64 addr)
   struct proc *p = myproc();
   struct stat st;
 
-  if (f->type == FD_INODE || f->type == FD_DEVICE) {
+  if(f->type == FD_INODE || f->type == FD_DEVICE){
     ilock(f->ip);
     stati(f->ip, &st);
     iunlock(f->ip);
-
-    if (copyout(p->pagetable, addr, (char *)&st, sizeof(st)) < 0)
+    if(copyout(p->pagetable, addr, (char *)&st, sizeof(st)) < 0)
       return -1;
-
     return 0;
   }
-
   return -1;
 }
 
@@ -124,22 +126,19 @@ fileread(struct file *f, uint64 addr, int n)
 {
   int r = 0;
 
-  if (f->readable == 0)
+  if(f->readable == 0)
     return -1;
 
-  if (f->type == FD_PIPE) {
+  if(f->type == FD_PIPE){
     r = piperead(f->pipe, addr, n);
-  } else if (f->type == FD_DEVICE) {
-    if (f->major < 0 || f->major >= NDEV || !devsw[f->major].read)
+  } else if(f->type == FD_DEVICE){
+    if(f->major < 0 || f->major >= NDEV || !devsw[f->major].read)
       return -1;
-
     r = devsw[f->major].read(1, addr, n);
-  } else if (f->type == FD_INODE) {
+  } else if(f->type == FD_INODE){
     ilock(f->ip);
-
-    if ((r = readi(f->ip, 1, addr, f->off, n)) > 0)
+    if((r = readi(f->ip, 1, addr, f->off, n)) > 0)
       f->off += r;
-
     iunlock(f->ip);
   } else {
     panic("fileread");
@@ -155,50 +154,42 @@ filewrite(struct file *f, uint64 addr, int n)
 {
   int r, ret = 0;
 
-  if (f->writable == 0)
+  if(f->writable == 0)
     return -1;
 
-  if (f->type == FD_PIPE) {
+  if(f->type == FD_PIPE){
     ret = pipewrite(f->pipe, addr, n);
-  } else if (f->type == FD_DEVICE) {
-    if (f->major < 0 || f->major >= NDEV || !devsw[f->major].write)
+  } else if(f->type == FD_DEVICE){
+    if(f->major < 0 || f->major >= NDEV || !devsw[f->major].write)
       return -1;
-
     ret = devsw[f->major].write(1, addr, n);
-  } else if (f->type == FD_INODE) {
-    // Write a few blocks at a time to avoid exceeding
+  } else if(f->type == FD_INODE){
+    // write a few blocks at a time to avoid exceeding
     // the maximum log transaction size, including
     // i-node, indirect block, allocation blocks,
     // and 2 blocks of slop for non-aligned writes.
-    // This really belongs lower down, since writei()
+    // this really belongs lower down, since writei()
     // might be writing a device like the console.
-
-    int max = ((MAXOPBLOCKS - 1 - 1 - 2) / 2) * BSIZE;
+    int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
     int i = 0;
-
-    while (i < n) {
+    while(i < n){
       int n1 = n - i;
-
-      if (n1 > max)
+      if(n1 > max)
         n1 = max;
 
       begin_op();
       ilock(f->ip);
-
-      if ((r = writei(f->ip, 1, addr + i, f->off, n1)) > 0)
+      if((r = writei(f->ip, 1, addr + i, f->off, n1)) > 0)
         f->off += r;
-
       iunlock(f->ip);
       end_op();
 
-      if (r != n1) {
-        // Error from writei.
+      if(r != n1){
+        // error from writei
         break;
       }
-
       i += r;
     }
-
     ret = (i == n ? n : -1);
   } else {
     panic("filewrite");
@@ -222,23 +213,10 @@ file_index_of(struct file *f)
   return (addr - base) / sizeof(struct file);
 }
 
-// Fill info->open_file_count and info->files[] with a snapshot of every
-// open file object (ftable.file[i].ref > 0), plus the distinct PIDs that
-// reference each object through some ofile[] slot.
-//
-// info is provided (and not otherwise touched) by sys_sysinfo(); it must
-// not live on the kernel stack. Only the file part of *info is written.
-//
-// Locking: the ftable lock and a proc lock are never held at the same time.
-// Phase 1: hold ftable.lock, copy the file objects, release it.
-// Phase 2: for each non-UNUSED proc, hold p->lock only, scan p->ofile[].
-//
-// The snapshot is therefore not atomic: a file opened/closed between the
-// two phases may be missed or may show a PID list that disagrees with ref.
-//
-// All writers of ofile[] use p->lock, matching Process Management.
-// Returns 0 on success, -1 for a null info or an invalid file pointer.
-// On invalid input, clear only the file portion; never return partial rows.
+// Copy file metadata under ftable.lock, then scan each ofile[] under p->lock.
+// Never hold both locks: fileclose() may wake a process. The two phases
+// can observe different times; a file index can be reused between them.
+// On error, clear the file portion only. The caller owns the kernel buffer.
 int
 collect_file_info(struct sysinfo *info)
 {
@@ -246,13 +224,13 @@ collect_file_info(struct sysinfo *info)
   int i, n;
   struct proc *p;
 
-  if (info == 0)
+  if(info == 0)
     return -1;
 
   info->open_file_count = 0;
   memset(info->files, 0, sizeof(info->files));
 
-  for (i = 0; i < NFILE; i++)
+  for(i = 0; i < NFILE; i++)
     slot_of[i] = -1;
 
   // Phase 1: snapshot the file objects.
@@ -260,10 +238,10 @@ collect_file_info(struct sysinfo *info)
 
   acquire(&ftable.lock);
 
-  for (i = 0; i < NFILE; i++) {
+  for(i = 0; i < NFILE; i++){
     struct file *f = &ftable.file[i];
 
-    if (f->ref <= 0)
+    if(f->ref <= 0)
       continue;
 
     struct sysinfo_file *sf = &info->files[n];
@@ -284,24 +262,24 @@ collect_file_info(struct sysinfo *info)
   info->open_file_count = n;
 
   // Phase 2: collect distinct referencing PIDs.
-  for (p = proc; p < &proc[NPROC]; p++) {
+  for(p = proc; p < &proc[NPROC]; p++){
     acquire(&p->lock);
 
-    if (p->state == UNUSED) {
+    if(p->state == UNUSED){
       release(&p->lock);
       continue;
     }
 
     int pid = p->pid;
 
-    for (i = 0; i < NOFILE; i++) {
+    for(i = 0; i < NOFILE; i++){
       struct file *f = p->ofile[i];
 
-      if (f == 0)
+      if(f == 0)
         continue;
 
       int index = file_index_of(f);
-      if (index < 0 || index >= NFILE) {
+      if(index < 0 || index >= NFILE){
         release(&p->lock);
         info->open_file_count = 0;
         memset(info->files, 0, sizeof(info->files));
@@ -310,17 +288,17 @@ collect_file_info(struct sysinfo *info)
 
       int slot = slot_of[index];
 
-      if (slot < 0)
+      if(slot < 0)
         continue;
 
       struct sysinfo_file *sf = &info->files[slot];
 
       // Keep each PID only once.
-      if (sf->process_count > 0 &&
+      if(sf->process_count > 0 &&
           sf->pids[sf->process_count - 1] == pid)
         continue;
 
-      if (sf->process_count < NPROC)
+      if(sf->process_count < NPROC)
         sf->pids[sf->process_count++] = pid;
     }
 

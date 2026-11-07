@@ -96,6 +96,23 @@ main(void)
   preserved();
 
   reset();
+  ftable.file[0].readable = 1;
+  ftable.file[0].writable = 1;
+  struct file *allocated = filealloc();
+  check(allocated == &ftable.file[0], "reuse first free slot");
+  check(collect_file_info(&guarded.info) == 0 &&
+        guarded.info.files[0].type == FD_NONE &&
+        guarded.info.files[0].readable == 0 &&
+        guarded.info.files[0].writable == 0,
+        "allocating object cannot expose previous owner's mode");
+  filesetinfo(allocated, FD_PIPE, 1, 0);
+  check(collect_file_info(&guarded.info) == 0 &&
+        guarded.info.files[0].type == FD_PIPE &&
+        guarded.info.files[0].readable == 1 &&
+        guarded.info.files[0].writable == 0 && active == 0,
+        "publish complete type/mode and release table lock");
+
+  reset();
   ftable.file[0].ref = 3;
   ftable.file[0].type = FD_INODE;
   ftable.file[0].readable = 1;

@@ -357,15 +357,13 @@ sys_open(void)
   }
 
   if(ip->type == T_DEVICE){
-    f->type = FD_DEVICE;
     f->major = ip->major;
   } else {
-    f->type = FD_INODE;
     f->off = 0;
   }
   f->ip = ip;
-  f->readable = !(omode & O_WRONLY);
-  f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
+  filesetinfo(f, ip->type == T_DEVICE ? FD_DEVICE : FD_INODE,
+              !(omode & O_WRONLY), (omode & O_WRONLY) || (omode & O_RDWR));
 
   if((omode & O_TRUNC) && ip->type == T_FILE){
     itrunc(ip);

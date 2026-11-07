@@ -16,16 +16,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class Console:
-    def __init__(self, build, cpus, log):
+    def __init__(self, build, cpus, log, make_qemu=False):
         self.log, self.text, self.cursor = log, '', 0
-        self.process = subprocess.Popen([
+        command = ['make', 'qemu', f'CPUS={cpus}'] if make_qemu else [
             'qemu-system-riscv64', '-machine', 'virt', '-bios', 'none',
             '-kernel', 'kernel/kernel', '-m', '128M', '-smp', str(cpus),
             '-nographic', '-monitor', 'none',
             '-global', 'virtio-mmio.force-legacy=false',
             '-drive', 'file=fs.img,if=none,format=raw,id=x0',
             '-device', 'virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0',
-        ], cwd=build, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        ]
+        self.process = subprocess.Popen(command, cwd=build, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT)
         self.selector = selectors.DefaultSelector()
         self.selector.register(self.process.stdout, selectors.EVENT_READ)
