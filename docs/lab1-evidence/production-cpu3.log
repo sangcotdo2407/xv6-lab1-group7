@@ -1,0 +1,401 @@
+
+xv6 kernel is booting
+
+hart 1 starting
+hart 2 starting
+init: starting sh
+$ filetest
+test 1: open a new file
+  ok   new fd appears in sysinfo
+  ok   open_file_count +1
+  ok   type is FD_INODE
+  ok   O_RDONLY: readable only
+  ok   ref == 1
+  ok   pids = {self}
+  ok   close: open_file_count back to base
+test 2: open the same path twice
+  ok   two different file_index
+  ok   open_file_count +2
+  ok   each object has ref == 1
+  ok   closed both: back to base
+test 3: dup
+  ok   both fds -> same file_index
+  ok   dup adds no file object
+  ok   ref == 2
+  ok   process_count == 1 (ref != process_count)
+  ok   close(dup): ref back to 1, object still open
+  ok   close last fd: object released
+test 4: fork shares struct file
+  ok   ref == 2 after fork
+  ok   process_count == 2
+  ok   pids = {parent, child}
+  ok   no duplicated pid
+  ok   child's fd -> same file_index
+  ok   after child exits: ref 1, 1 pid
+test 5: fork + dup (many fds, one object)
+  ok   ref == 4 (2 fds x 2 processes)
+  ok   process_count == 2, not 4
+  ok   pids not duplicated
+test 6: pipe ends
+  ok   read end
+  ok   write end
+  ok   two distinct objects
+test 7: fill NOFILE descriptors
+  ok   open() fails once the fd table is full
+  ok   open_file_count == base + successful opens
+  ok   every entry: index < NFILE, ref >= 1, pids distinct
+  ok   all closed: back to base
+test 8: repeated sysinfo() calls
+  ok   50 calls, same open_file_count
+test 9: pipe rollback and invalid descriptors
+  ok   filled descriptor table with dup
+  ok   pipe fails with no descriptor slot
+  ok   no file leak after first fdalloc fails
+  ok   pipe fails with only one descriptor slot
+  ok   second fdalloc rollback restores files
+  ok   rolled-back descriptor is absent
+  ok   pipe rejects unmapped destination
+  ok   first copyout rollback restores files
+  ok   pipe rejects second fd outside mapped memory
+  ok   second copyout rollback restores files
+  ok   invalid descriptors return errors
+  ok   open missing file returns an error
+  ok   error paths preserve snapshot
+test 10: descriptor churn with 10000 snapshots
+  ok   4 workers: dup/close, open/close, pipe and rollback keep bounds and unique PIDs
+  ok   worker exit releases all files
+filetest: ALL PASSED
+$ sysinfotest
+===== sysinfotest =====
+[1] goi nhieu lan, ket qua on dinh
+-- FILE DANG MO: 1 --
+  file#0 DEVICE rw ref=9 procs=3 pids: 1 2 10
+-- TIEN TRINH (state != UNUSED): 3 --
+  pid=1 ppid=0 SLEEPING sched=25 fds: 0->#0 1->#0 2->#0
+  pid=2 ppid=1 SLEEPING sched=15 fds: 0->#0 1->#0 2->#0
+  pid=10 ppid=2 RUNNING sched=31 fds: 0->#0 1->#0 2->#0
+  [PASS] 5 lan goi lien tiep cho cung so file / so tien trinh
+  [PASS] co it nhat console va 2 tien trinh (sh + test)
+  [PASS] tien trinh hien tai co state RUNNING
+  [PASS] parent_pid tro toi tien trinh dang ton tai (sh)
+  [PASS] init (pid 1) ton tai, khong co cha
+  [PASS] fd 0,1,2 cung tro toi 1 file (console)
+  [PASS] console: DEVICE, doc+ghi
+  [PASS] console liet ke PID cua tien trinh hien tai
+  [PASS] bat bien ref / process_count / pids / file_index
+[2] open / close / quyen doc-ghi
+  [PASS] open them dung 1 file
+  [PASS] type INODE
+  [PASS] O_RDWR -> readable && writable
+  [PASS] ref = 1, process_count = 1
+  [PASS] pids[0] = pid hien tai
+  [PASS] mo them 2 file (ke ca mo trung duong dan) -> +2
+  [PASS] O_RDONLY -> chi doc
+  [PASS] O_WRONLY -> chi ghi
+  [PASS] open 2 lan cung duong dan -> 2 file_index khac nhau
+  [PASS] close het -> so file ve ban dau
+  [PASS] bat bien
+[3] dup: nhieu fd, cung 1 struct file
+  [PASS] dup khong tao them file moi
+  [PASS] 3 fd cung file_index
+  [PASS] ref = 3
+  [PASS] process_count = 1 du ref = 3 (PID khong lap)
+  [PASS] dong 1 fd -> ref = 2
+  [PASS] fd da dong khong con trong open_files[]
+  [PASS] dong het -> so file ve ban dau
+  [PASS] bat bien
+[4] fork + pipe: file dung chung giua cha va con
+  [PASS] pipe tao 2 file
+  [PASS] ca hai type PIPE
+  [PASS] dau doc chi doc, dau ghi chi ghi
+  [PASS] ref = 1 truoc fork
+  [PASS] doi con that su ngu tren pipe
+  [PASS] process_count tang 1 sau fork
+  [PASS] parent_pid cua con = pid cua cha
+  [PASS] con dang SLEEPING (doi pipe)
+  [PASS] con da duoc lap lich >= 1 lan
+  [PASS] con ke thua dung so fd cua cha
+  [PASS] fd cua con tro cung file_index voi cha
+  [PASS] ref cua pipe tang len 2
+  [PASS] pids chua ca cha va con
+  [PASS] bat bien
+  [PASS] con tu goi sysinfo thay dung parent_pid va fd
+  [PASS] don dep: so file / so tien trinh ve ban dau
+[5] zombie va tai su dung o proc
+  [PASS] doi con that su thanh zombie
+  [PASS] con da exit, cha chua wait -> ZOMBIE
+  [PASS] zombie khong giu file
+  [PASS] zombie van duoc dem (state != UNUSED)
+  [PASS] sau wait: tien trinh bien mat khoi danh sach
+  [PASS] so file khong doi
+  [PASS] tien trinh moi co pid moi (o proc tai su dung nhung pid khong lap)
+[6] scheduling_count
+  [PASS] tang sau khi ngu / duoc danh thuc
+  [PASS] khong bao gio giam
+  scheduling_count: 60 -> 62 -> 63
+[7] gioi han: NOFILE / NPROC / NFILE
+  [PASS] open that bai khi het fd
+  [PASS] tien trinh dung het NOFILE fd
+  [PASS] so file khop so lan open thanh cong
+  [PASS] bat bien khi 1 tien trinh dung het fd
+  [PASS] dong het -> ve ban dau
+  [PASS] process_count = ban dau + so con fork duoc
+  [PASS] bang tien trinh day (fork that bai o NPROC)
+  [PASS] bat bien khi bang tien trinh day
+  [PASS] don dep xong: ve ban dau
+  [PASS] bang file day: open_file_count = NFILE
+  [PASS] bat bien khi bang file day
+  [PASS] don dep xong: ve ban dau
+[8] con tro khong hop le
+  [PASS] 0xfff...f -> -1
+  [PASS] dia chi gan tran so (cong len bi quan) -> -1
+  [PASS] dia chi >= MAXVA -> -1
+  [PASS] dia chi vung kernel -> -1
+  [PASS] dia chi chua map (sau heap) -> -1
+  [PASS] struct vat qua cuoi vung map -> -1
+  [PASS] stack guard (khong co PTE_U) -> -1
+  [PASS] trapframe chi kernel truy cap -> -1
+  [PASS] trampoline chi kernel truy cap -> -1
+  [PASS] NULL / read-only text -> -1, con van song
+  [PASS] NULL / read-only text -> -1, con van song
+  [PASS] tien trinh con voi con tro xau nhan -1, khong bi giet
+  [PASS] kernel van song, goi hop le van thanh cong
+  [PASS] bat bien van dung (khong ro khoa / ro bo nho)
+[9] bien trang, kich thuoc, khong ghi tran, khong ro ri
+  sizeof(struct sysinfo) = 38248 byte (10 trang)
+  [PASS] struct bat dau dau trang, trai nhieu trang
+  [PASS] dia chi le (khong can can le)
+  [PASS] struct vua khit cuoi vung map
+  [PASS] lech 1 byte ra ngoai -> -1
+  [PASS] copyout vao giua buffer canary
+  [PASS] khong ghi len du lieu truoc va sau struct
+  [PASS] phan tu ngoai open_file_count / process_count deu bang 0
+  [PASS] so luong nam trong gioi han mang
+  [PASS] bat bien
+[10] nhieu tien trinh goi sysinfo dong thoi (bo dem kernel dung chung)
+  [PASS] 4 tien trinh x 40 lan goi: snapshot nao cung hop le, khong deadlock
+  [PASS] don dep: ve ban dau
+[11] dup/close lien tuc dong thoi voi sysinfo
+  [PASS] fork du 4 worker va nhan du tin hieu ready
+  [PASS] 2000 snapshot deu thanh cong
+  [PASS] moi fd trong [0,NOFILE), moi file_index trong [0,NFILE) khi dang dup/close
+  [PASS] don dep: ve ban dau
+[12] pipe rollback: con tro loi / chi con 1 fd
+  [PASS] pipe voi con tro loi -> -1
+  [PASS] rollback copyout khong ro file / fd
+  [PASS] copyout fd0 thanh cong, fd1 qua cuoi trang -> -1
+  [PASS] rollback ca hai fd khi copyout fd1 loi
+  [PASS] chi con 1 fd: fdalloc(rf) duoc, fdalloc(wf) loi
+  [PASS] rollback fd0, khong ro hai file pipe
+  [PASS] bat bien sau rollback fdalloc
+  [PASS] don dep: file va fd ve ban dau
+===== 102/102 PASS =====
+$ forktest
+fork test
+fork test OK
+$ usertests -q
+usertests starting
+test copyin: OK
+test copyout: OK
+test copyinstr1: OK
+test copyinstr2: OK
+test copyinstr3: OK
+test rwsbrk: OK
+test truncate1: OK
+test truncate2: OK
+test truncate3: OK
+test openiput: OK
+test exitiput: OK
+test iput: OK
+test opentest: OK
+test writetest: OK
+test writebig: OK
+test createtest: OK
+test dirtest: OK
+test exectest: OK
+test pipe1: OK
+test killstatus: OK
+test preempt: kill... wait... OK
+test exitwait: OK
+test reparent: OK
+test twochildren: OK
+test forkfork: OK
+test forkforkfork: OK
+test reparent2: OK
+test mem: OK
+test sharedfd: OK
+test fourfiles: OK
+test createdelete: OK
+test unlinkread: OK
+test linktest: OK
+test concreate: OK
+test linkunlink: OK
+test subdir: OK
+test bigwrite: OK
+test bigfile: OK
+test fourteen: OK
+test rmdot: OK
+test dirfile: OK
+test iref: OK
+test forktest: OK
+test sbrkbasic: OK
+test sbrkmuch: OK
+test kernmem: usertrap(): unexpected scause 0x000000000000000d pid=6630
+            sepc=0x0000000000002218 stval=0x0000000080000000
+usertrap(): unexpected scause 0x000000000000000d pid=6631
+            sepc=0x0000000000002218 stval=0x000000008000c350
+usertrap(): unexpected scause 0x000000000000000d pid=6632
+            sepc=0x0000000000002218 stval=0x00000000800186a0
+usertrap(): unexpected scause 0x000000000000000d pid=6633
+            sepc=0x0000000000002218 stval=0x00000000800249f0
+usertrap(): unexpected scause 0x000000000000000d pid=6634
+            sepc=0x0000000000002218 stval=0x0000000080030d40
+usertrap(): unexpected scause 0x000000000000000d pid=6635
+            sepc=0x0000000000002218 stval=0x000000008003d090
+usertrap(): unexpected scause 0x000000000000000d pid=6636
+            sepc=0x0000000000002218 stval=0x00000000800493e0
+usertrap(): unexpected scause 0x000000000000000d pid=6637
+            sepc=0x0000000000002218 stval=0x0000000080055730
+usertrap(): unexpected scause 0x000000000000000d pid=6638
+            sepc=0x0000000000002218 stval=0x0000000080061a80
+usertrap(): unexpected scause 0x000000000000000d pid=6639
+            sepc=0x0000000000002218 stval=0x000000008006ddd0
+usertrap(): unexpected scause 0x000000000000000d pid=6640
+            sepc=0x0000000000002218 stval=0x000000008007a120
+usertrap(): unexpected scause 0x000000000000000d pid=6641
+            sepc=0x0000000000002218 stval=0x0000000080086470
+usertrap(): unexpected scause 0x000000000000000d pid=6642
+            sepc=0x0000000000002218 stval=0x00000000800927c0
+usertrap(): unexpected scause 0x000000000000000d pid=6643
+            sepc=0x0000000000002218 stval=0x000000008009eb10
+usertrap(): unexpected scause 0x000000000000000d pid=6644
+            sepc=0x0000000000002218 stval=0x00000000800aae60
+usertrap(): unexpected scause 0x000000000000000d pid=6645
+            sepc=0x0000000000002218 stval=0x00000000800b71b0
+usertrap(): unexpected scause 0x000000000000000d pid=6646
+            sepc=0x0000000000002218 stval=0x00000000800c3500
+usertrap(): unexpected scause 0x000000000000000d pid=6647
+            sepc=0x0000000000002218 stval=0x00000000800cf850
+usertrap(): unexpected scause 0x000000000000000d pid=6648
+            sepc=0x0000000000002218 stval=0x00000000800dbba0
+usertrap(): unexpected scause 0x000000000000000d pid=6649
+            sepc=0x0000000000002218 stval=0x00000000800e7ef0
+usertrap(): unexpected scause 0x000000000000000d pid=6650
+            sepc=0x0000000000002218 stval=0x00000000800f4240
+usertrap(): unexpected scause 0x000000000000000d pid=6651
+            sepc=0x0000000000002218 stval=0x0000000080100590
+usertrap(): unexpected scause 0x000000000000000d pid=6652
+            sepc=0x0000000000002218 stval=0x000000008010c8e0
+usertrap(): unexpected scause 0x000000000000000d pid=6653
+            sepc=0x0000000000002218 stval=0x0000000080118c30
+usertrap(): unexpected scause 0x000000000000000d pid=6654
+            sepc=0x0000000000002218 stval=0x0000000080124f80
+usertrap(): unexpected scause 0x000000000000000d pid=6655
+            sepc=0x0000000000002218 stval=0x00000000801312d0
+usertrap(): unexpected scause 0x000000000000000d pid=6656
+            sepc=0x0000000000002218 stval=0x000000008013d620
+usertrap(): unexpected scause 0x000000000000000d pid=6657
+            sepc=0x0000000000002218 stval=0x0000000080149970
+usertrap(): unexpected scause 0x000000000000000d pid=6658
+            sepc=0x0000000000002218 stval=0x0000000080155cc0
+usertrap(): unexpected scause 0x000000000000000d pid=6659
+            sepc=0x0000000000002218 stval=0x0000000080162010
+usertrap(): unexpected scause 0x000000000000000d pid=6660
+            sepc=0x0000000000002218 stval=0x000000008016e360
+usertrap(): unexpected scause 0x000000000000000d pid=6661
+            sepc=0x0000000000002218 stval=0x000000008017a6b0
+usertrap(): unexpected scause 0x000000000000000d pid=6662
+            sepc=0x0000000000002218 stval=0x0000000080186a00
+usertrap(): unexpected scause 0x000000000000000d pid=6663
+            sepc=0x0000000000002218 stval=0x0000000080192d50
+usertrap(): unexpected scause 0x000000000000000d pid=6664
+            sepc=0x0000000000002218 stval=0x000000008019f0a0
+usertrap(): unexpected scause 0x000000000000000d pid=6665
+            sepc=0x0000000000002218 stval=0x00000000801ab3f0
+usertrap(): unexpected scause 0x000000000000000d pid=6666
+            sepc=0x0000000000002218 stval=0x00000000801b7740
+usertrap(): unexpected scause 0x000000000000000d pid=6667
+            sepc=0x0000000000002218 stval=0x00000000801c3a90
+usertrap(): unexpected scause 0x000000000000000d pid=6668
+            sepc=0x0000000000002218 stval=0x00000000801cfde0
+usertrap(): unexpected scause 0x000000000000000d pid=6669
+            sepc=0x0000000000002218 stval=0x00000000801dc130
+OK
+test MAXVAplus: usertrap(): unexpected scause 0x000000000000000f pid=6671
+            sepc=0x00000000000022c4 stval=0x0000004000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6672
+            sepc=0x00000000000022c4 stval=0x0000008000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6673
+            sepc=0x00000000000022c4 stval=0x0000010000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6674
+            sepc=0x00000000000022c4 stval=0x0000020000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6675
+            sepc=0x00000000000022c4 stval=0x0000040000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6676
+            sepc=0x00000000000022c4 stval=0x0000080000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6677
+            sepc=0x00000000000022c4 stval=0x0000100000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6678
+            sepc=0x00000000000022c4 stval=0x0000200000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6679
+            sepc=0x00000000000022c4 stval=0x0000400000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6680
+            sepc=0x00000000000022c4 stval=0x0000800000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6681
+            sepc=0x00000000000022c4 stval=0x0001000000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6682
+            sepc=0x00000000000022c4 stval=0x0002000000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6683
+            sepc=0x00000000000022c4 stval=0x0004000000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6684
+            sepc=0x00000000000022c4 stval=0x0008000000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6685
+            sepc=0x00000000000022c4 stval=0x0010000000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6686
+            sepc=0x00000000000022c4 stval=0x0020000000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6687
+            sepc=0x00000000000022c4 stval=0x0040000000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6688
+            sepc=0x00000000000022c4 stval=0x0080000000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6689
+            sepc=0x00000000000022c4 stval=0x0100000000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6690
+            sepc=0x00000000000022c4 stval=0x0200000000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6691
+            sepc=0x00000000000022c4 stval=0x0400000000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6692
+            sepc=0x00000000000022c4 stval=0x0800000000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6693
+            sepc=0x00000000000022c4 stval=0x1000000000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6694
+            sepc=0x00000000000022c4 stval=0x2000000000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6695
+            sepc=0x00000000000022c4 stval=0x4000000000000000
+usertrap(): unexpected scause 0x000000000000000f pid=6696
+            sepc=0x00000000000022c4 stval=0x8000000000000000
+OK
+test sbrkfail: usertrap(): unexpected scause 0x000000000000000d pid=6708
+            sepc=0x00000000000049f8 stval=0x0000000000013000
+OK
+test sbrkarg: OK
+test validatetest: OK
+test bsstest: OK
+test bigargtest: OK
+test argptest: OK
+test stacktest: usertrap(): unexpected scause 0x000000000000000d pid=6716
+            sepc=0x0000000000002436 stval=0x0000000000010ea0
+OK
+test textwrite: usertrap(): unexpected scause 0x000000000000000f pid=6718
+            sepc=0x00000000000024b6 stval=0x0000000000000000
+OK
+test pgbug: OK
+test sbrkbugs: usertrap(): unexpected scause 0x000000000000000c pid=6721
+            sepc=0x0000000000005cba stval=0x0000000000005cba
+usertrap(): unexpected scause 0x000000000000000c pid=6722
+            sepc=0x0000000000005cba stval=0x0000000000005cba
+OK
+test sbrklast: OK
+test sbrk8000: OK
+test badarg: OK
+ALL TESTS PASSED
+$

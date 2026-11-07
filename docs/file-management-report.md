@@ -25,6 +25,11 @@ major cho device. `filealloc()` chọn slot ref == 0 và đặt ref = 1;
 `filedup()` tăng ref; `fileclose()` giảm ref và giải phóng tài nguyên khi về
 0. Các thao tác ref được bảo vệ bằng ftable.lock.
 
+Bản tích hợp cuối còn khởi tạo type/mode sạch trong `filealloc()` và dùng
+`filesetinfo()` khi open/pipe công bố type/readable/writable. Helper này dùng
+cùng `ftable.lock` với collector, nên một hàng metadata không ghép các trường
+trước và sau khởi tạo. Không đọc inode/pipe hoặc thay ref trong helper.
+
 | Thao tác | Descriptor/object/ref |
 | --- | --- |
 | open() | Một descriptor mới, một struct file mới, ref = 1; hai lần mở cùng đường dẫn vẫn là hai object |

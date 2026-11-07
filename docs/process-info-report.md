@@ -39,11 +39,9 @@ Việc sao chép `np->ofile[]` trong `fork()` vốn đã giữ `np->lock` nên k
 thêm khóa ở đó. Chủ sở hữu vẫn có thể đọc descriptor của mình không khóa vì
 xv6 không có nhiều thread cùng sửa một bảng descriptor của một tiến trình.
 
-Trong `exit()`, FD trống được bỏ qua trước khi lấy khóa. Với mỗi FD đang mở,
-hàm lấy/nhả `p->lock` đúng một lần để tháo con trỏ, rồi gọi `fileclose()` đúng
-một lần sau khi nhả khóa. Nếu hai FD cùng trỏ một `struct file`, phải giảm ref
-hai lần, mỗi lần cho một FD; không loại trùng theo `file_index`. Reader chỉ
-quan sát bảng, không thể sửa con trỏ giữa lần đọc của owner và lúc tháo FD.
+Trong bản tích hợp, `exit()` đọc và xóa từng ô dưới `p->lock`, nhả khóa rồi
+mới gọi `fileclose()` nếu ô có file. Nếu hai FD cùng trỏ một `struct file`,
+phải giảm ref hai lần, mỗi lần cho một FD; không loại trùng theo `file_index`.
 
 Thay đổi ở `file.c/defs.h` chỉ phục vụ helper đã được hai reviewer đề nghị;
 chữ ký giống PR #3. Không đổi `kernel/sysinfo.h`, các hàm `collect_*`, syscall
@@ -91,9 +89,8 @@ Mọi đường lỗi đều nhả khóa. Không sleep, cấp phát bộ nhớ, 
 
 `fileclose()` có thể gọi `begin_op()/iput()` và sleep. Vì vậy `exit()` và
 `sys_close()` tháo descriptor dưới `p->lock`, nhả khóa rồi mới gọi `fileclose()`.
-Hai nhánh rollback pipe cũng nhả khóa trước khi đóng file. `exit()` đọc ô của
-chính mình để bỏ qua FD trống; chỉ owner sửa bảng nên con trỏ giữ nguyên đến
-khi tháo dưới khóa. `fdalloc()` chỉ khóa quanh việc tìm/gán ô.
+Hai nhánh rollback pipe cũng nhả khóa trước khi đóng file. `exit()` đọc/xóa
+mỗi ô trong cùng một critical section. `fdalloc()` chỉ khóa quanh việc tìm/gán ô.
 
 Caller phải cung cấp buffer đủ lớn và không cho nhiều caller dùng chung cùng
 lúc nếu chưa có cơ chế tuần tự hóa. Collector không tạo `struct sysinfo` cục bộ
@@ -184,7 +181,8 @@ toán unsigned sau 2^64 lượt; không đổi nghĩa thành bộ đếm bão h�
 
 ## Tích hợp và vấn đáp
 
-Thứ tự đề xuất: review/merge PR #4 trước; PR #2/#3 sau đó rebase trên main mới.
+Thứ tự tích hợp thực tế: PR #2 → #3 → #4 trên `integration/lab1`, từ main
+`1e90d3a`. Xem [báo cáo tích hợp cuối](lab1-integration-review.md).
 Giữ đúng một bản process collector, trường counter và điểm tăng/reset của PR #4;
 giữ một helper `file_index_of()` đã kiểm tra căn chỉnh; ghép collector file của
 Vũ và syscall của Thi. Quy tắc này không tự giải quyết xung đột trên nhánh khác.
