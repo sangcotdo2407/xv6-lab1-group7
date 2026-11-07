@@ -1,18 +1,17 @@
 OUTPUT_ARCH( "riscv" )
 ENTRY( _main )
 
-
 SECTIONS
 {
  . = 0x0;
- 
+
   .text : {
     *(.text .text.*)
   }
 
   .rodata : {
     . = ALIGN(16);
-    *(.srodata .srodata.*) /* do not need to distinguish this from .rodata */
+    *(.srodata .srodata.*)
     . = ALIGN(16);
     *(.rodata .rodata.*)
     . = ALIGN(0x1000);
@@ -20,14 +19,14 @@ SECTIONS
 
   .data : {
     . = ALIGN(16);
-    *(.sdata .sdata.*) /* do not need to distinguish this from .data */
+    *(.sdata .sdata.*)
     . = ALIGN(16);
     *(.data .data.*)
   }
 
   .bss : {
     . = ALIGN(16);
-    *(.sbss .sbss.*) /* do not need to distinguish this from .bss */
+    *(.sbss .sbss.*)
     . = ALIGN(16);
     *(.bss .bss.*)
   }

@@ -1,7 +1,3 @@
-//
-// Support functions for system calls that involve file descriptors.
-//
-
 #include "types.h"
 #include "riscv.h"
 #include "defs.h"
@@ -12,6 +8,9 @@
 #include "file.h"
 #include "stat.h"
 #include "proc.h"
+#include "sysinfo.h"
+
+extern struct proc proc[NPROC];
 
 struct devsw devsw[NDEV];
 struct {
@@ -25,7 +24,6 @@ fileinit(void)
   initlock(&ftable.lock, "ftable");
 }
 
-// Allocate a file structure.
 struct file*
 filealloc(void)
 {
@@ -34,6 +32,9 @@ filealloc(void)
   acquire(&ftable.lock);
   for(f = ftable.file; f < ftable.file + NFILE; f++){
     if(f->ref == 0){
+      f->type = FD_NONE;
+      f->readable = 0;
+      f->writable = 0;
       f->ref = 1;
       release(&ftable.lock);
       return f;
@@ -43,7 +44,16 @@ filealloc(void)
   return 0;
 }
 
-// Increment ref count for file f.
+void
+filesetinfo(struct file *f, int type, int readable, int writable)
+{
+  acquire(&ftable.lock);
+  f->type = type;
+  f->readable = readable != 0;
+  f->writable = writable != 0;
+  release(&ftable.lock);
+}
+
 struct file*
 filedup(struct file *f)
 {
@@ -55,7 +65,6 @@ filedup(struct file *f)
   return f;
 }
 
-// Close file f.  (Decrement ref count, close when reaches 0.)
 void
 fileclose(struct file *f)
 {
@@ -82,14 +91,12 @@ fileclose(struct file *f)
   }
 }
 
-// Get metadata about file f.
-// addr is a user virtual address, pointing to a struct stat.
 int
 filestat(struct file *f, uint64 addr)
 {
   struct proc *p = myproc();
   struct stat st;
-  
+
   if(f->type == FD_INODE || f->type == FD_DEVICE){
     ilock(f->ip);
     stati(f->ip, &st);
@@ -101,8 +108,6 @@ filestat(struct file *f, uint64 addr)
   return -1;
 }
 
-// Read from file f.
-// addr is a user virtual address.
 int
 fileread(struct file *f, uint64 addr, int n)
 {
@@ -129,8 +134,6 @@ fileread(struct file *f, uint64 addr, int n)
   return r;
 }
 
-// Write to file f.
-// addr is a user virtual address.
 int
 filewrite(struct file *f, uint64 addr, int n)
 {
@@ -146,12 +149,7 @@ filewrite(struct file *f, uint64 addr, int n)
       return -1;
     ret = devsw[f->major].write(1, addr, n);
   } else if(f->type == FD_INODE){
-    // write a few blocks at a time to avoid exceeding
-    // the maximum log transaction size, including
-    // i-node, indirect block, allocation blocks,
-    // and 2 blocks of slop for non-aligned writes.
-    // this really belongs lower down, since writei()
-    // might be writing a device like the console.
+
     int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
     int i = 0;
     while(i < n){
@@ -161,13 +159,13 @@ filewrite(struct file *f, uint64 addr, int n)
 
       begin_op();
       ilock(f->ip);
-      if ((r = writei(f->ip, 1, addr + i, f->off, n1)) > 0)
+      if((r = writei(f->ip, 1, addr + i, f->off, n1)) > 0)
         f->off += r;
       iunlock(f->ip);
       end_op();
 
       if(r != n1){
-        // error from writei
+
         break;
       }
       i += r;
@@ -180,3 +178,102 @@ filewrite(struct file *f, uint64 addr, int n)
   return ret;
 }
 
+int
+file_index_of(struct file *f)
+{
+  uint64 addr = (uint64)f;
+  uint64 base = (uint64)ftable.file;
+
+  if(addr < base || addr - base >= sizeof(ftable.file) ||
+     (addr - base) % sizeof(struct file) != 0)
+    return -1;
+  return (addr - base) / sizeof(struct file);
+}
+
+int
+collect_file_info(struct sysinfo *info)
+{
+  int slot_of[NFILE];
+  int i, n;
+  struct proc *p;
+
+  if(info == 0)
+    return -1;
+
+  info->open_file_count = 0;
+  memset(info->files, 0, sizeof(info->files));
+
+  for(i = 0; i < NFILE; i++)
+    slot_of[i] = -1;
+
+  n = 0;
+
+  acquire(&ftable.lock);
+
+  for(i = 0; i < NFILE; i++){
+    struct file *f = &ftable.file[i];
+
+    if(f->ref <= 0)
+      continue;
+
+    struct sysinfo_file *sf = &info->files[n];
+
+    sf->file_index = i;
+    sf->type = f->type;
+    sf->readable = f->readable;
+    sf->writable = f->writable;
+    sf->ref = f->ref;
+    sf->process_count = 0;
+
+    slot_of[i] = n;
+    n++;
+  }
+
+  release(&ftable.lock);
+
+  info->open_file_count = n;
+
+  for(p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+
+    if(p->state == UNUSED){
+      release(&p->lock);
+      continue;
+    }
+
+    int pid = p->pid;
+
+    for(i = 0; i < NOFILE; i++){
+      struct file *f = p->ofile[i];
+
+      if(f == 0)
+        continue;
+
+      int index = file_index_of(f);
+      if(index < 0 || index >= NFILE){
+        release(&p->lock);
+        info->open_file_count = 0;
+        memset(info->files, 0, sizeof(info->files));
+        return -1;
+      }
+
+      int slot = slot_of[index];
+
+      if(slot < 0)
+        continue;
+
+      struct sysinfo_file *sf = &info->files[slot];
+
+      if(sf->process_count > 0 &&
+          sf->pids[sf->process_count - 1] == pid)
+        continue;
+
+      if(sf->process_count < NPROC)
+        sf->pids[sf->process_count++] = pid;
+    }
+
+    release(&p->lock);
+  }
+
+  return 0;
+}

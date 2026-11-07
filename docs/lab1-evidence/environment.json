@@ -1,0 +1,7 @@
+{
+  "gcc": "riscv64-unknown-elf-gcc (13.2.0-11ubuntu1+12) 13.2.0",
+  "qemu": "QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+  "source": "/mnt/c/Users/Admin/xv6-labs-2023/.worktrees/lab1-integration",
+  "process_source": null,
+  "syscall_source": null
+}

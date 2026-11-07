@@ -1,0 +1,147 @@
+qemu-system-riscv64 -machine virt -bios none -kernel kernel/kernel -m 128M -smp 3 -nographic -global virtio-mmio.force-legacy=false -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
+
+xv6 kernel is booting
+
+hart 2 starting
+hart 1 starting
+init: starting sh
+$ stressfs
+stressfs starting
+wriwtwer itr0ei
+ te1
+2
+wrwirtiet e 34
+
+reard
+ead
+read
+read
+read
+$ stresscheck
+STRESSFS_CHECK ALL PASSED: five files, 10240 bytes each
+$ sysinfotest
+===== sysinfotest =====
+[1] goi nhieu lan, ket qua on dinh
+-- FILE DANG MO: 1 --
+  file#0 DEVICE rw ref=9 procs=3 pids: 1 2 9
+-- TIEN TRINH (state != UNUSED): 3 --
+  pid=1 ppid=0 SLEEPING sched=24 fds: 0->#0 1->#0 2->#0
+  pid=2 ppid=1 SLEEPING sched=17 fds: 0->#0 1->#0 2->#0
+  pid=9 ppid=2 RUNNING sched=31 fds: 0->#0 1->#0 2->#0
+  [PASS] 5 lan goi lien tiep cho cung so file / so tien trinh
+  [PASS] co it nhat console va 2 tien trinh (sh + test)
+  [PASS] tien trinh hien tai co state RUNNING
+  [PASS] parent_pid tro toi tien trinh dang ton tai (sh)
+  [PASS] init (pid 1) ton tai, khong co cha
+  [PASS] fd 0,1,2 cung tro toi 1 file (console)
+  [PASS] console: DEVICE, doc+ghi
+  [PASS] console liet ke PID cua tien trinh hien tai
+  [PASS] bat bien ref / process_count / pids / file_index
+[2] open / close / quyen doc-ghi
+  [PASS] open them dung 1 file
+  [PASS] type INODE
+  [PASS] O_RDWR -> readable && writable
+  [PASS] ref = 1, process_count = 1
+  [PASS] pids[0] = pid hien tai
+  [PASS] mo them 2 file (ke ca mo trung duong dan) -> +2
+  [PASS] O_RDONLY -> chi doc
+  [PASS] O_WRONLY -> chi ghi
+  [PASS] open 2 lan cung duong dan -> 2 file_index khac nhau
+  [PASS] close het -> so file ve ban dau
+  [PASS] bat bien
+[3] dup: nhieu fd, cung 1 struct file
+  [PASS] dup khong tao them file moi
+  [PASS] 3 fd cung file_index
+  [PASS] ref = 3
+  [PASS] process_count = 1 du ref = 3 (PID khong lap)
+  [PASS] dong 1 fd -> ref = 2
+  [PASS] fd da dong khong con trong open_files[]
+  [PASS] dong het -> so file ve ban dau
+  [PASS] bat bien
+[4] fork + pipe: file dung chung giua cha va con
+  [PASS] pipe tao 2 file
+  [PASS] ca hai type PIPE
+  [PASS] dau doc chi doc, dau ghi chi ghi
+  [PASS] ref = 1 truoc fork
+  [PASS] doi con that su ngu tren pipe
+  [PASS] process_count tang 1 sau fork
+  [PASS] parent_pid cua con = pid cua cha
+  [PASS] con dang SLEEPING (doi pipe)
+  [PASS] con da duoc lap lich >= 1 lan
+  [PASS] con ke thua dung so fd cua cha
+  [PASS] fd cua con tro cung file_index voi cha
+  [PASS] ref cua pipe tang len 2
+  [PASS] pids chua ca cha va con
+  [PASS] bat bien
+  [PASS] con tu goi sysinfo thay dung parent_pid va fd
+  [PASS] don dep: so file / so tien trinh ve ban dau
+[5] zombie va tai su dung o proc
+  [PASS] doi con that su thanh zombie
+  [PASS] con da exit, cha chua wait -> ZOMBIE
+  [PASS] zombie khong giu file
+  [PASS] zombie van duoc dem (state != UNUSED)
+  [PASS] sau wait: tien trinh bien mat khoi danh sach
+  [PASS] so file khong doi
+  [PASS] tien trinh moi co pid moi (o proc tai su dung nhung pid khong lap)
+[6] scheduling_count
+  [PASS] tang sau khi ngu / duoc danh thuc
+  [PASS] khong bao gio giam
+  scheduling_count: 61 -> 63 -> 64
+[7] gioi han: NOFILE / NPROC / NFILE
+  [PASS] open that bai khi het fd
+  [PASS] tien trinh dung het NOFILE fd
+  [PASS] so file khop so lan open thanh cong
+  [PASS] bat bien khi 1 tien trinh dung het fd
+  [PASS] dong het -> ve ban dau
+  [PASS] process_count = ban dau + so con fork duoc
+  [PASS] bang tien trinh day (fork that bai o NPROC)
+  [PASS] bat bien khi bang tien trinh day
+  [PASS] don dep xong: ve ban dau
+  [PASS] bang file day: open_file_count = NFILE
+  [PASS] bat bien khi bang file day
+  [PASS] don dep xong: ve ban dau
+[8] con tro khong hop le
+  [PASS] 0xfff...f -> -1
+  [PASS] dia chi gan tran so (cong len bi quan) -> -1
+  [PASS] dia chi >= MAXVA -> -1
+  [PASS] dia chi vung kernel -> -1
+  [PASS] dia chi chua map (sau heap) -> -1
+  [PASS] struct vat qua cuoi vung map -> -1
+  [PASS] stack guard (khong co PTE_U) -> -1
+  [PASS] trapframe chi kernel truy cap -> -1
+  [PASS] trampoline chi kernel truy cap -> -1
+  [PASS] NULL / read-only text -> -1, con van song
+  [PASS] NULL / read-only text -> -1, con van song
+  [PASS] tien trinh con voi con tro xau nhan -1, khong bi giet
+  [PASS] kernel van song, goi hop le van thanh cong
+  [PASS] bat bien van dung (khong ro khoa / ro bo nho)
+[9] bien trang, kich thuoc, khong ghi tran, khong ro ri
+  sizeof(struct sysinfo) = 38248 byte (10 trang)
+  [PASS] struct bat dau dau trang, trai nhieu trang
+  [PASS] dia chi le (khong can can le)
+  [PASS] struct vua khit cuoi vung map
+  [PASS] lech 1 byte ra ngoai -> -1
+  [PASS] copyout vao giua buffer canary
+  [PASS] khong ghi len du lieu truoc va sau struct
+  [PASS] phan tu ngoai open_file_count / process_count deu bang 0
+  [PASS] so luong nam trong gioi han mang
+  [PASS] bat bien
+[10] nhieu tien trinh goi sysinfo dong thoi (bo dem kernel dung chung)
+  [PASS] 4 tien trinh x 40 lan goi: snapshot nao cung hop le, khong deadlock
+  [PASS] don dep: ve ban dau
+[11] dup/close lien tuc dong thoi voi sysinfo
+  [PASS] fork du 4 worker va nhan du tin hieu ready
+  [PASS] 2000 snapshot deu thanh cong
+  [PASS] moi fd trong [0,NOFILE), moi file_index trong [0,NFILE) khi dang dup/close
+  [PASS] don dep: ve ban dau
+[12] pipe rollback: con tro loi / chi con 1 fd
+  [PASS] pipe voi con tro loi -> -1
+  [PASS] rollback copyout khong ro file / fd
+  [PASS] copyout fd0 thanh cong, fd1 qua cuoi trang -> -1
+  [PASS] rollback ca hai fd khi copyout fd1 loi
+  [PASS] chi con 1 fd: fdalloc(rf) duoc, fdalloc(wf) loi
+  [PASS] rollback fd0, khong ro hai file pipe
+  [PASS] bat bien sau rollback fdalloc
+  [PASS] don dep: file va fd ve ban dau
+===== 102/102 PASS =====
+$

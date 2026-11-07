@@ -47,7 +47,6 @@ printptr(int fd, uint64 x) {
     putc(fd, digits[x >> (sizeof(uint64) * 8 - 4)]);
 }
 
-// Print to the given fd. Only understands %d, %x, %p, %s.
 void
 vprintf(int fd, const char *fmt, va_list ap)
 {
@@ -85,7 +84,7 @@ vprintf(int fd, const char *fmt, va_list ap)
       } else if(c == '%'){
         putc(fd, c);
       } else {
-        // Unknown % sequence.  Print it to draw attention.
+
         putc(fd, '%');
         putc(fd, c);
       }

@@ -5,6 +5,8 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sleeplock.h"
+#include "sysinfo.h"
 
 uint64
 sys_exit(void)
@@ -12,7 +14,7 @@ sys_exit(void)
   int n;
   argint(0, &n);
   exit(n);
-  return 0;  // not reached
+  return 0;
 }
 
 uint64
@@ -79,8 +81,6 @@ sys_kill(void)
   return kill(pid);
 }
 
-// return how many clock tick interrupts have occurred
-// since start.
 uint64
 sys_uptime(void)
 {
@@ -90,4 +90,32 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+static struct sysinfo kinfo;
+static struct sleeplock kinfo_lock = { .lk = { .name = "sysinfo" }, .name = "sysinfo" };
+
+uint64
+sys_sysinfo(void)
+{
+  uint64 uaddr;
+  int ret = 0;
+
+  argaddr(0, &uaddr);
+
+  acquiresleep(&kinfo_lock);
+
+  memset(&kinfo, 0, sizeof(kinfo));
+
+  if(collect_file_info(&kinfo) < 0)
+    ret = -1;
+  else if(collect_process_info(&kinfo) < 0)
+    ret = -1;
+  else if(copyout(myproc()->pagetable, uaddr,
+                  (char *)&kinfo, sizeof(kinfo)) < 0)
+    ret = -1;
+
+  releasesleep(&kinfo_lock);
+
+  return ret;
 }
