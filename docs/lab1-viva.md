@@ -159,7 +159,8 @@ s0..s11 trong context; trapframe mới chứa trạng thái user cho trap/sret.
    sử dụng; khi có churn chỉ bảo đảm protocol khóa, giới hạn và dữ liệu từng phần.
 
 10. **Chứng minh code đúng bằng những test nào?**
-    Sysinfotest 102/102, filetest 49 check, forktest, usertests 60 ca trên 1/3 CPU;
+    Sysinfotest 42/42 nhóm khẳng định, filetest 12 check sau khi gộp các phần trùng;
+    forktest, usertests 60 ca trên 1/3 CPU;
     10.000 snapshot file churn, 32 dispatch chính xác, full tables, con trỏ lỗi,
     sanitizer, fault collector giữ buffer 0xA5 và 100 recovery calls, stressfs
     kiểm nội dung. Chưa khẳng định kết quả slowtests hoặc stress dài hạn.

@@ -4,6 +4,10 @@ Ngày kiểm tra: 07/11/2026, múi giờ Việt Nam. Repository:
 `sangcotdo2407/xv6-lab1-group7`. Báo cáo này mô tả cây tích hợp cuối;
 các báo cáo review theo từng PR được giữ làm lịch sử, không thay thế kết quả dưới đây.
 
+Bản hiện tại đã được rút gọn test và bỏ comment theo yêu cầu tiếp theo.
+Kết quả 102/102 và 49 check bên dưới thuộc phiên tích hợp ban đầu.
+Xem [bản cập nhật test và kết quả mới](lab1-test-simplification.md) cho cây hiện tại.
+
 ## Safeguard và nguồn đối chiếu
 
 Trước fetch, checkout gốc ở `feature/process-info`, HEAD `aee410e`, không có

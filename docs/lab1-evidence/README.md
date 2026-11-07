@@ -1,5 +1,8 @@
 # Bằng chứng kiểm thử tích hợp
 
+Thư mục này giữ bằng chứng phiên tích hợp trước khi rút gọn test/bỏ comment.
+Kết quả của cây hiện tại nằm ở [bản cập nhật](../lab1-test-simplification.md).
+
 Log từ các lượt chạy ngày 07/11/2026, chỉ chuẩn hóa LF và bỏ khoảng trắng
 cuối dòng để git diff --check không báo dấu nhắc shell/dòng lệnh make.
 Log thô giữ nguyên trong test-results/lab1-integration. Code được kiểm thử là
