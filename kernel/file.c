@@ -12,6 +12,8 @@
 #include "file.h"
 #include "stat.h"
 #include "proc.h"
+#include "sysinfo.h"
+extern struct proc proc[NPROC];
 
 struct devsw devsw[NDEV];
 struct {
@@ -180,3 +182,66 @@ filewrite(struct file *f, uint64 addr, int n)
   return ret;
 }
 
+int
+file_index_of(struct file *f)
+{
+  uint64 base = (uint64)ftable.file;
+  uint64 addr = (uint64)f;
+  if(addr < base || addr - base >= sizeof(ftable.file) ||
+     (addr - base) % sizeof(struct file) != 0)
+    return -1;
+  return (addr - base) / sizeof(struct file);
+}
+
+int
+collect_file_info(struct sysinfo *info)
+{
+  int pos[NFILE];
+
+  if(info == 0)
+    return -1;
+  info->open_file_count = 0;
+
+  acquire(&ftable.lock);
+  for(int i = 0; i < NFILE; i++){
+    struct file *f = &ftable.file[i];
+    pos[i] = -1;
+    if(f->ref > 0){
+      struct sysinfo_file *e = &info->files[info->open_file_count];
+      e->file_index = i;
+      e->type = f->type;
+      e->readable = f->readable;
+      e->writable = f->writable;
+      e->ref = f->ref;
+      e->process_count = 0;
+      pos[i] = info->open_file_count++;
+    }
+  }
+  release(&ftable.lock);          // nhả ftable.lock TRƯỚC khi lấy p->lock
+
+  for(struct proc *p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+    if(p->state != UNUSED){
+      for(int fd = 0; fd < NOFILE; fd++){
+        struct file *f = p->ofile[fd];      // chỉ đọc MỘT lần
+        if(f == 0)
+          continue;
+        int idx = file_index_of(f);
+        if(idx < 0){                        // con trỏ không thuộc ftable
+          release(&p->lock);
+          return -1;
+        }
+        int k = pos[idx];                   // idx đã nằm trong [0, NFILE)
+        if(k < 0)
+          continue;                         // file mở sau lúc chụp
+        struct sysinfo_file *e = &info->files[k];
+        if(e->process_count == 0 || e->pids[e->process_count - 1] != p->pid){
+          if(e->process_count < NPROC)
+            e->pids[e->process_count++] = p->pid;   // chống trùng PID
+        }
+      }
+    }
+    release(&p->lock);
+  }
+  return 0;
+}
