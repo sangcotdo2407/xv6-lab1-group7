@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""Build in a disposable directory, run kernel tests and stock xv6 regressions.
-
-Requires Linux/WSL, make, GCC/binutils for RISC-V, and qemu-system-riscv64.
-No sysinfo syscall or collect_file_info implementation is required.
-"""
 
 import argparse
 import os
@@ -16,12 +11,10 @@ import tempfile
 import time
 import json
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
-
 def instrument_proc(source):
-    """Instrument forkret in a copy, or fail clearly if its structure changed."""
+
     signatures = list(re.finditer(
         r"(?m)^void[ \t]*\n[ \t]*forkret\([ \t]*void[ \t]*\)[ \t]*\n\{[ \t]*\n",
         source))
@@ -48,7 +41,6 @@ def instrument_proc(source):
     declarations = ("static void process_info_selftest(void);\n"
                     "static void process_info_test_worker(void);\n")
     return declarations + source[:start] + body + source[end:]
-
 
 class Console:
     def __init__(self, build, cpus, log):
@@ -108,9 +100,8 @@ class Console:
         self.process.stdin.close()
         self.process.stdout.close()
 
-
 def prepare(build, instrument):
-    # Source files only: never copy .git, editor files or existing artifacts.
+
     for directory in ("kernel", "user", "mkfs"):
         target = build / directory
         target.mkdir()
@@ -125,7 +116,6 @@ def prepare(build, instrument):
         source = instrument_proc(path.read_text())
         source += "\n" + (ROOT / "tests/process_info_kernel.c").read_text()
         path.write_text(source)
-
 
 def run(build, cpus, output, instrument, quick):
     suffix = "selftest" if instrument else "stock"
@@ -147,7 +137,6 @@ def run(build, cpus, output, instrument, quick):
         finally:
             console.close()
     print(f"Log: {path}", flush=True)
-
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -188,14 +177,13 @@ def main():
         print("Toolchain: " + metadata["compiler"], flush=True)
         print(f"PASS: build ({build_log})", flush=True)
         for cpus in args.cpus:
-            # Every QEMU run starts from the same pristine filesystem image.
+
             pristine = build / "fs-pristine.img"
             if not pristine.exists():
                 shutil.copy2(build / "fs.img", pristine)
             shutil.copy2(pristine, build / "fs.img")
             run(build, cpus, args.output, instrument=not args.stock,
                 quick=args.quick_suite)
-
 
 if __name__ == "__main__":
     main()

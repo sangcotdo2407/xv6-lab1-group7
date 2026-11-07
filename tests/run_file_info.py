@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Run native sanitizer regressions and build/QEMU tests in temporary copies."""
 
 import argparse
 import json
@@ -13,7 +12,6 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-
 
 class Console:
     def __init__(self, build, cpus, log, make_qemu=False):
@@ -72,7 +70,6 @@ class Console:
         self.process.stdin.close()
         self.process.stdout.close()
 
-
 def prepare(build, process_source, syscall_source=None, kernel_probe=False):
     for directory in ('kernel', 'user', 'mkfs'):
         target = build/directory
@@ -100,7 +97,6 @@ def prepare(build, process_source, syscall_source=None, kernel_probe=False):
         source += '\n'+(ROOT/'tests/file_info_kernel.c').read_text()
         path.write_text(source)
 
-
 def native(output):
     with tempfile.TemporaryDirectory(prefix='xv6-file-native-') as directory:
         for name in ('file_info_native', 'sysinfo_print_native'):
@@ -116,7 +112,6 @@ def native(output):
                 subprocess.run([str(executable)], stdout=log,
                                stderr=subprocess.STDOUT, check=True)
             print(f'PASS: {name} (ASan/UBSan)', flush=True)
-
 
 def qemu_suite(build, cpus, output, label, quick, kernel_probe=False):
     with (output/f'qemu-{label}-cpu{cpus}.log').open('w') as log:
@@ -142,7 +137,6 @@ def qemu_suite(build, cpus, output, label, quick, kernel_probe=False):
                     console.command('usertests '+name, 'ALL TESTS PASSED')
         finally:
             console.close()
-
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -200,7 +194,6 @@ def main():
                 qemu_suite(build, cpus, args.output, label, args.quick_suite,
                            args.kernel_probe_only)
     print('FILE_INFO ALL RUNS PASSED', flush=True)
-
 
 if __name__ == '__main__':
     main()

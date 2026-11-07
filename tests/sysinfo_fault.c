@@ -7,7 +7,7 @@ static struct sysinfo info;
 int
 main(void)
 {
-  // The temporary kernel fails each collector once, in this order.
+
   for(int i = 0; i < 2; i++){
     memset(&info, 0xa5, sizeof(info));
     if(sysinfo(&info) != -1){

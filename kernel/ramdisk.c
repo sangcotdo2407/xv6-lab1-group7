@@ -1,7 +1,3 @@
-//
-// ramdisk that uses the disk image loaded by qemu -initrd fs.img
-//
-
 #include "types.h"
 #include "riscv.h"
 #include "defs.h"
@@ -17,8 +13,6 @@ ramdiskinit(void)
 {
 }
 
-// If B_DIRTY is set, write buf to disk, clear B_DIRTY, set B_VALID.
-// Else if B_VALID is not set, read buf from disk, set B_VALID.
 void
 ramdiskrw(struct buf *b)
 {
@@ -34,11 +28,11 @@ ramdiskrw(struct buf *b)
   char *addr = (char *)RAMDISK + diskaddr;
 
   if(b->flags & B_DIRTY){
-    // write
+
     memmove(addr, b->data, BSIZE);
     b->flags &= ~B_DIRTY;
   } else {
-    // read
+
     memmove(b->data, addr, BSIZE);
     b->flags |= B_VALID;
   }

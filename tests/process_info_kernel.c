@@ -1,5 +1,3 @@
-// Included in proc.c ONLY in the temporary build made by run_process_info.py.
-// This gives tests access to allocproc/freeproc without exporting a kernel API.
 #include "fs.h"
 #include "sleeplock.h"
 #include "file.h"
@@ -93,7 +91,6 @@ pit_failed_collect(void)
             pit_buffer.info.files[NFILE-1].ref == 67890, "failure preserves files");
 }
 
-// Called at the start of forkret with the scheduler's p->lock still held.
 static void
 process_info_test_worker(void)
 {
@@ -108,7 +105,6 @@ process_info_test_worker(void)
     sleep(&pit_go, &pit_gate);
   release(&pit_gate);
 
-  // Exercise both descriptor-allocation failure paths of sys_pipe().
   int fds[NOFILE];
   for(int i = 1; i < NOFILE; i++){
     p->trapframe->a0 = 0;
@@ -127,8 +123,6 @@ process_info_test_worker(void)
     pit_check(sys_close() == 0, "close duplicate");
   }
 
-  // The parent's collector runs concurrently on SMP. Real syscall handlers
-  // exercise fdalloc, sys_close and both sys_pipe rollback paths.
   for(int i = 0; i < 200; i++){
     p->trapframe->a0 = 0;
     int fd = sys_dup();
@@ -148,8 +142,7 @@ process_info_test_worker(void)
     }
     yield();
   }
-  // Leave holes before/between live descriptors, including a live last slot.
-  // Two descriptors refer to the shared file; exit must drop BOTH references.
+
   for(int fd = 1; fd < NOFILE; fd++){
     p->trapframe->a0 = 0;
     pit_check(sys_dup() == fd, "prepare duplicated exit descriptors");
@@ -240,8 +233,7 @@ process_info_selftest(void)
             "NOFILE and both ends of ftable");
 
   for(int state = SLEEPING; state <= ZOMBIE; state++){
-    // RUNNABLE would let another CPU execute this synthetic process.
-    // RUNNABLE and RUNNING are tested with the real fork worker below.
+
     if(state == RUNNABLE || state == RUNNING)
       continue;
     acquire(&p->lock);
@@ -272,7 +264,6 @@ process_info_selftest(void)
   p->parent = self;
   release(&wait_lock);
 
-  // Release synthetic descriptor references before freeing the processes.
   acquire(&p->lock);
   memset(p->ofile, 0, sizeof(p->ofile));
   release(&p->lock);
@@ -297,8 +288,6 @@ process_info_selftest(void)
   pit_check(pit_buffer.info.process_count == 1, "all synthetic slots freed");
   printf("PROCESS_INFO PASS: NPROC, NOFILE, NFILE, states, uint64, invalid pointers, reuse\n");
 
-  // No timer preemption between observations: yield returns after exactly one
-  // dispatch, while collecting information itself must not increment counts.
   int enabled = intr_get();
   intr_off();
   for(int i = 0; i < 32; i++){
@@ -371,8 +360,7 @@ process_info_selftest(void)
             sp->open_files[2].fd == NOFILE-1 &&
             sp->open_files[2].file_index == shared_index,
             "sparse exit snapshot preserves aliased file identity");
-  // Quiescent phase: the only other process is blocked at the exit gate.
-  // No process can mutate these file references until we release the worker.
+
   pit_check(shared->ref == 3 && pit_exit_private->ref == 1,
             "references before exit: parent, two aliases, private file");
   acquire(&pit_gate);
@@ -386,8 +374,7 @@ process_info_selftest(void)
   } while(sp && sp->state != ZOMBIE);
   pit_check(sp && sp->open_file_count == 0 && sp->parent_pid == selfpid,
             "exit closes files and leaves zombie");
-  // The worker is a zombie; init is again the only runnable process and no
-  // file slot can be reused before these checks. No ftable layout is exposed.
+
   pit_check(shared->ref == 1 && pit_exit_private->ref == 0,
             "exit drops each FD reference once and frees the private file");
   printf("PROCESS_INFO PASS: sparse exit, aliased FDs, exact reference cleanup\n");

@@ -1,7 +1,3 @@
-//
-// formatted console output -- printf, panic.
-//
-
 #include <stdarg.h>
 
 #include "types.h"
@@ -17,7 +13,6 @@
 
 volatile int panicked = 0;
 
-// lock to avoid interleaving concurrent printf's.
 static struct {
   struct spinlock lock;
   int locking;
@@ -59,7 +54,6 @@ printptr(uint64 x)
     consputc(digits[x >> (sizeof(uint64) * 8 - 4)]);
 }
 
-// Print to the console. only understands %d, %x, %p, %s.
 void
 printf(char *fmt, ...)
 {
@@ -103,7 +97,7 @@ printf(char *fmt, ...)
       consputc('%');
       break;
     default:
-      // Print unknown % sequence to draw attention.
+
       consputc('%');
       consputc(c);
       break;
@@ -122,7 +116,7 @@ panic(char *s)
   printf("panic: ");
   printf(s);
   printf("\n");
-  panicked = 1; // freeze uart output from other CPUs
+  panicked = 1;
   for(;;)
     ;
 }

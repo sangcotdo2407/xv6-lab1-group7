@@ -1,4 +1,3 @@
-// Reuse the actual user formatter; discard unused syscall tests at link time.
 #define main sysinfotest_main
 #include "user/sysinfotest.c"
 #undef main

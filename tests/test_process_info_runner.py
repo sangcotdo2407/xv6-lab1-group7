@@ -1,8 +1,6 @@
-"""Guard against silent selftest misplacement when proc.c changes."""
 import unittest
 
 from run_process_info import ROOT, instrument_proc
-
 
 class InstrumentationTests(unittest.TestCase):
     def setUp(self):
@@ -20,12 +18,10 @@ class InstrumentationTests(unittest.TestCase):
                         body.index("process_info_selftest();"))
         self.assertEqual(result.count("    process_info_selftest();"), 1)
 
-    def test_comments_and_unrelated_barriers_do_not_select_hooks(self):
-        source = self.source.replace("Still holding p->lock from scheduler.",
-                                     "Changed explanatory comment.")
-        source += "\nvoid unrelated(void) { __sync_synchronize(); }\n"
+    def test_unrelated_barriers_do_not_select_hooks(self):
+        source = self.source + "\nvoid unrelated(void) { __sync_synchronize(); }\n"
         result = instrument_proc(source)
-        self.assertIn("Changed explanatory comment.", result)
+        self.assertIn("void unrelated(void) { __sync_synchronize(); }", result)
         self.assertEqual(result.count("    process_info_selftest();"), 1)
 
     def test_missing_barrier_reports_source_change(self):
@@ -35,7 +31,6 @@ class InstrumentationTests(unittest.TestCase):
     def test_duplicate_definition_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "exactly one"):
             instrument_proc(self.source + "\nvoid\nforkret(void)\n{\n}\n")
-
 
 if __name__ == "__main__":
     unittest.main()

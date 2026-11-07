@@ -1,4 +1,3 @@
-// Included in proc.c only in a temporary test build, after fsinit at boot.
 #include "fs.h"
 #include "sleeplock.h"
 #include "file.h"

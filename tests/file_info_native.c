@@ -1,5 +1,3 @@
-// Native sanitizer regression: include the real collector, never a copy.
-// The real spinlocks are exercised separately by the QEMU user tests.
 #include "kernel/file.c"
 
 struct proc proc[NPROC];

@@ -1,5 +1,3 @@
-// Sleeping locks
-
 #include "types.h"
 #include "riscv.h"
 #include "defs.h"
@@ -44,12 +42,9 @@ int
 holdingsleep(struct sleeplock *lk)
 {
   int r;
-  
+
   acquire(&lk->lk);
   r = lk->locked && (lk->pid == myproc()->pid);
   release(&lk->lk);
   return r;
 }
-
-
-

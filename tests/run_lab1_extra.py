@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Clean build, make qemu, filesystem data checks, and collector fault injection.
 
-All added programs and fault hooks live in disposable build copies only.
-Run the main suites with run_file_info.py and run_process_info.py as well.
-"""
 import argparse
 import hashlib
 import json
@@ -15,7 +11,6 @@ import tempfile
 
 from run_file_info import ROOT, Console, prepare
 
-
 def add_program(build, source, name):
     shutil.copy2(ROOT / 'tests' / source, build / 'user' / (name + '.c'))
     path = build / 'Makefile'
@@ -24,7 +19,6 @@ def add_program(build, source, name):
     if text.count(marker) != 1:
         raise RuntimeError('expected one sysinfotest entry in UPROGS')
     path.write_text(text.replace(marker, marker + '\t$U/_' + name + '\\\n'))
-
 
 def inject_faults(build):
     for name, function in [('file.c', 'collect_file_info'),
@@ -36,7 +30,6 @@ def inject_faults(build):
             raise RuntimeError('expected one collector definition: ' + function)
         path.write_text(text.replace(marker, marker +
             '\n  static int fail_once;\n  if(!fail_once++) return -1;', 1))
-
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -99,7 +92,6 @@ def main():
                 summary['results'].append({'variant': variant, 'cpus': cpus, 'passed': True})
                 (args.output / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     print('LAB1_EXTRA ALL PASSED', flush=True)
-
 
 if __name__ == '__main__':
     main()

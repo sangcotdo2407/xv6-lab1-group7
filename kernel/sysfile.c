@@ -1,9 +1,3 @@
-//
-// File-system system calls.
-// Mostly argument checking, since we don't trust
-// user code, and calls into file.c and fs.c.
-//
-
 #include "types.h"
 #include "riscv.h"
 #include "defs.h"
@@ -16,8 +10,6 @@
 #include "file.h"
 #include "fcntl.h"
 
-// Fetch the nth word-sized system call argument as a file descriptor
-// and return both the descriptor and the corresponding struct file.
 static int
 argfd(int n, int *pfd, struct file **pf)
 {
@@ -34,8 +26,6 @@ argfd(int n, int *pfd, struct file **pf)
   return 0;
 }
 
-// Allocate a file descriptor for the given file.
-// Takes over file reference from caller on success.
 static int
 fdalloc(struct file *f)
 {
@@ -88,7 +78,7 @@ sys_write(void)
   struct file *f;
   int n;
   uint64 p;
-  
+
   argaddr(1, &p);
   argint(2, &n);
   if(argfd(0, 0, &f) < 0)
@@ -109,7 +99,7 @@ sys_close(void)
   acquire(&p->lock);
   p->ofile[fd] = 0;
   release(&p->lock);
-  // fileclose() can sleep; never hold p->lock across it.
+
   fileclose(f);
   return 0;
 }
@@ -118,7 +108,7 @@ uint64
 sys_fstat(void)
 {
   struct file *f;
-  uint64 st; // user pointer to struct stat
+  uint64 st;
 
   argaddr(1, &st);
   if(argfd(0, 0, &f) < 0)
@@ -126,7 +116,6 @@ sys_fstat(void)
   return filestat(f, st);
 }
 
-// Create the path new as a link to the same inode as old.
 uint64
 sys_link(void)
 {
@@ -176,7 +165,6 @@ bad:
   return -1;
 }
 
-// Is the directory dp empty except for "." and ".." ?
 static int
 isdirempty(struct inode *dp)
 {
@@ -211,7 +199,6 @@ sys_unlink(void)
 
   ilock(dp);
 
-  // Cannot unlink "." or "..".
   if(namecmp(name, ".") == 0 || namecmp(name, "..") == 0)
     goto bad;
 
@@ -280,8 +267,8 @@ create(char *path, short type, short major, short minor)
   ip->nlink = 1;
   iupdate(ip);
 
-  if(type == T_DIR){  // Create . and .. entries.
-    // No ip->nlink++ for ".": avoid cyclic ref count.
+  if(type == T_DIR){
+
     if(dirlink(ip, ".", ip->inum) < 0 || dirlink(ip, "..", dp->inum) < 0)
       goto fail;
   }
@@ -290,8 +277,8 @@ create(char *path, short type, short major, short minor)
     goto fail;
 
   if(type == T_DIR){
-    // now that success is guaranteed:
-    dp->nlink++;  // for ".."
+
+    dp->nlink++;
     iupdate(dp);
   }
 
@@ -300,7 +287,7 @@ create(char *path, short type, short major, short minor)
   return ip;
 
  fail:
-  // something went wrong. de-allocate ip.
+
   ip->nlink = 0;
   iupdate(ip);
   iunlockput(ip);
@@ -417,7 +404,7 @@ sys_chdir(void)
   char path[MAXPATH];
   struct inode *ip;
   struct proc *p = myproc();
-  
+
   begin_op();
   if(argstr(0, path, MAXPATH) < 0 || (ip = namei(path)) == 0){
     end_op();
@@ -482,7 +469,7 @@ sys_exec(void)
 uint64
 sys_pipe(void)
 {
-  uint64 fdarray; // user pointer to array of two integers
+  uint64 fdarray;
   struct file *rf, *wf;
   int fd0, fd1;
   struct proc *p = myproc();
