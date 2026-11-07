@@ -124,8 +124,8 @@ allocproc(void)
 
 found:
   p->pid = allocpid();
-  p->scheduling_count = 0;
   p->state = USED;
+  p->scheduling_count = 0;
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -165,6 +165,7 @@ freeproc(struct proc *p)
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
+  p->scheduling_count = 0;
   p->parent = 0;
   p->name[0] = 0;
   p->chan = 0;
@@ -359,7 +360,7 @@ exit(int status)
     struct file *f = p->ofile[fd];
     p->ofile[fd] = 0;
     release(&p->lock);
-    // Detach before dropping the reference; fileclose() may sleep.
+    // fileclose() may sleep; detach the descriptor before calling it.
     if(f)
       fileclose(f);
   }
@@ -662,6 +663,78 @@ either_copyin(void *dst, int user_src, uint64 src, uint64 len)
   }
 }
 
+// Copy the process portion only. The caller supplies a private kernel buffer
+// (not a user pointer) large enough for sysinfo, outside the kernel stack.
+// Each row is sampled separately; this is not an atomic system-wide snapshot.
+int
+collect_process_info(struct sysinfo *info)
+{
+  struct proc *p, *parent;
+  struct sysinfo_process *sp;
+
+  if(info == 0)
+    return -1;
+  info->process_count = 0;
+  memset(info->processes, 0, sizeof(info->processes));
+
+  for(p = proc; p < &proc[NPROC]; p++){
+    // Match wait()/exit(): wait_lock always precedes any proc lock.
+    acquire(&wait_lock);
+    acquire(&p->lock);
+    if(p->state == UNUSED){
+      release(&p->lock);
+      release(&wait_lock);
+      continue;
+    }
+    sp = &info->processes[info->process_count];
+    sp->pid = p->pid;
+    sp->state = p->state;
+    sp->scheduling_count = p->scheduling_count;
+    parent = p->parent;
+
+    for(int fd = 0; fd < NOFILE; fd++){
+      struct file *f = p->ofile[fd];
+      if(f == 0)
+        continue;
+      // file.c owns the table layout and validates the pointer without
+      // dereferencing it or taking ftable.lock while p->lock is held.
+      int index = file_index_of(f);
+      if(index < 0 || index >= NFILE)
+        goto bad;
+      struct sysinfo_fd *sf = &sp->open_files[sp->open_file_count++];
+      sf->fd = fd;
+      sf->file_index = index;
+    }
+    release(&p->lock);
+
+    // wait_lock keeps parentage and the live parent's lifetime stable.
+    // Drop the child's lock before taking the parent's: never two proc locks.
+    if(parent){
+      uint64 addr = (uint64)parent;
+      uint64 first = (uint64)proc;
+      if(addr < first || addr - first >= sizeof(proc) ||
+         (addr - first) % sizeof(struct proc) != 0){
+        release(&wait_lock);
+        goto clear;
+      }
+      acquire(&parent->lock);
+      sp->parent_pid = parent->pid;
+      release(&parent->lock);
+    }
+    release(&wait_lock);
+    info->process_count++;
+  }
+  return 0;
+
+bad:
+  release(&p->lock);
+  release(&wait_lock);
+clear:
+  info->process_count = 0;
+  memset(info->processes, 0, sizeof(info->processes));
+  return -1;
+}
+
 // Print a process listing to console.  For debugging.
 // Runs when user types ^P on console.
 // No lock to avoid wedging a stuck machine further.
@@ -690,46 +763,4 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
-}
-
-int
-collect_process_info(struct sysinfo *info)
-{
-  if(info == 0)
-    return -1;
-  info->process_count = 0;
-  memset(info->processes, 0, sizeof(info->processes));
-
-  acquire(&wait_lock);            // thứ tự khóa: wait_lock -> p->lock (như wait())
-  for(struct proc *p = proc; p < &proc[NPROC]; p++){
-    acquire(&p->lock);
-    if(p->state != UNUSED){
-      struct sysinfo_process *e = &info->processes[info->process_count];
-      e->pid = p->pid;
-      e->state = p->state;
-      e->parent_pid = p->parent ? p->parent->pid : 0;
-      e->scheduling_count = p->scheduling_count;
-      e->open_file_count = 0;
-      for(int fd = 0; fd < NOFILE; fd++){
-        struct file *f = p->ofile[fd];      // chỉ đọc MỘT lần
-        if(f == 0)
-          continue;
-        int idx = file_index_of(f);
-        if(idx < 0){                        // con trỏ không thuộc ftable
-          release(&p->lock);
-          release(&wait_lock);
-          info->process_count = 0;
-          memset(info->processes, 0, sizeof(info->processes));
-          return -1;
-        }
-        e->open_files[e->open_file_count].fd = fd;
-        e->open_files[e->open_file_count].file_index = idx;
-        e->open_file_count++;
-      }
-      info->process_count++;
-    }
-    release(&p->lock);
-  }
-  release(&wait_lock);
-  return 0;
 }
