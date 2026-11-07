@@ -50,6 +50,7 @@ memmove(void *dst, const void *src, uint n)
   return dst;
 }
 
+// memcpy exists to placate GCC.  Use memmove.
 void*
 memcpy(void *dst, const void *src, uint n)
 {
@@ -79,6 +80,7 @@ strncpy(char *s, const char *t, int n)
   return os;
 }
 
+// Like strncpy but guaranteed to NUL-terminate.
 char*
 safestrcpy(char *s, const char *t, int n)
 {

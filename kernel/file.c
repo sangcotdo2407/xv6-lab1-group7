@@ -1,3 +1,7 @@
+//
+// Support functions for system calls that involve file descriptors.
+//
+
 #include "types.h"
 #include "riscv.h"
 #include "defs.h"
@@ -24,6 +28,7 @@ fileinit(void)
   initlock(&ftable.lock, "ftable");
 }
 
+// Allocate a file structure.
 struct file*
 filealloc(void)
 {
@@ -44,6 +49,8 @@ filealloc(void)
   return 0;
 }
 
+// Publish snapshot fields together, using the collector's lock.
+// The caller owns this reference and initializes the inode/pipe separately.
 void
 filesetinfo(struct file *f, int type, int readable, int writable)
 {
@@ -54,6 +61,7 @@ filesetinfo(struct file *f, int type, int readable, int writable)
   release(&ftable.lock);
 }
 
+// Increment ref count for file f.
 struct file*
 filedup(struct file *f)
 {
@@ -65,6 +73,7 @@ filedup(struct file *f)
   return f;
 }
 
+// Close file f.  (Decrement ref count, close when reaches 0.)
 void
 fileclose(struct file *f)
 {
@@ -91,6 +100,8 @@ fileclose(struct file *f)
   }
 }
 
+// Get metadata about file f.
+// addr is a user virtual address, pointing to a struct stat.
 int
 filestat(struct file *f, uint64 addr)
 {
@@ -108,6 +119,8 @@ filestat(struct file *f, uint64 addr)
   return -1;
 }
 
+// Read from file f.
+// addr is a user virtual address.
 int
 fileread(struct file *f, uint64 addr, int n)
 {
@@ -134,6 +147,8 @@ fileread(struct file *f, uint64 addr, int n)
   return r;
 }
 
+// Write to file f.
+// addr is a user virtual address.
 int
 filewrite(struct file *f, uint64 addr, int n)
 {
@@ -149,7 +164,12 @@ filewrite(struct file *f, uint64 addr, int n)
       return -1;
     ret = devsw[f->major].write(1, addr, n);
   } else if(f->type == FD_INODE){
-
+    // write a few blocks at a time to avoid exceeding
+    // the maximum log transaction size, including
+    // i-node, indirect block, allocation blocks,
+    // and 2 blocks of slop for non-aligned writes.
+    // this really belongs lower down, since writei()
+    // might be writing a device like the console.
     int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
     int i = 0;
     while(i < n){
@@ -165,7 +185,7 @@ filewrite(struct file *f, uint64 addr, int n)
       end_op();
 
       if(r != n1){
-
+        // error from writei
         break;
       }
       i += r;
@@ -178,6 +198,9 @@ filewrite(struct file *f, uint64 addr, int n)
   return ret;
 }
 
+// Return the slot in the fixed file table, or -1 for an invalid pointer.
+// This is the file_index_of() interface also used by File Management.
+// Addresses are immutable: no lock or file-field dereference is needed.
 int
 file_index_of(struct file *f)
 {
@@ -190,6 +213,10 @@ file_index_of(struct file *f)
   return (addr - base) / sizeof(struct file);
 }
 
+// Copy file metadata under ftable.lock, then scan each ofile[] under p->lock.
+// Never hold both locks: fileclose() may wake a process. The two phases
+// can observe different times; a file index can be reused between them.
+// On error, clear the file portion only. The caller owns the kernel buffer.
 int
 collect_file_info(struct sysinfo *info)
 {
@@ -206,6 +233,7 @@ collect_file_info(struct sysinfo *info)
   for(i = 0; i < NFILE; i++)
     slot_of[i] = -1;
 
+  // Phase 1: snapshot the file objects.
   n = 0;
 
   acquire(&ftable.lock);
@@ -233,6 +261,7 @@ collect_file_info(struct sysinfo *info)
 
   info->open_file_count = n;
 
+  // Phase 2: collect distinct referencing PIDs.
   for(p = proc; p < &proc[NPROC]; p++){
     acquire(&p->lock);
 
@@ -264,6 +293,7 @@ collect_file_info(struct sysinfo *info)
 
       struct sysinfo_file *sf = &info->files[slot];
 
+      // Keep each PID only once.
       if(sf->process_count > 0 &&
           sf->pids[sf->process_count - 1] == pid)
         continue;

@@ -1,6 +1,7 @@
 struct stat;
 struct sysinfo;
 
+// system calls
 int fork(void);
 int exit(int) __attribute__((noreturn));
 int wait(int*);
@@ -24,6 +25,7 @@ int sleep(int);
 int uptime(void);
 int sysinfo(struct sysinfo *);
 
+// ulib.c
 int stat(const char*, struct stat*);
 char* strcpy(char*, const char*);
 void *memmove(void*, const void*, int);

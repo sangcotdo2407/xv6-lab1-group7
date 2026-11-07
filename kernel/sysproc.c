@@ -14,7 +14,7 @@ sys_exit(void)
   int n;
   argint(0, &n);
   exit(n);
-  return 0;
+  return 0;  // not reached
 }
 
 uint64
@@ -81,6 +81,8 @@ sys_kill(void)
   return kill(pid);
 }
 
+// return how many clock tick interrupts have occurred
+// since start.
 uint64
 sys_uptime(void)
 {
@@ -92,6 +94,8 @@ sys_uptime(void)
   return xticks;
 }
 
+// The snapshot exceeds the one-page kernel stack. A sleeplock serializes
+// callers; collectors release all table spinlocks before copyout().
 static struct sysinfo kinfo;
 static struct sleeplock kinfo_lock = { .lk = { .name = "sysinfo" }, .name = "sysinfo" };
 

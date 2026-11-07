@@ -1,3 +1,10 @@
+# Context switch
+#
+#   void swtch(struct context *old, struct context *new);
+#
+# Save current registers in old. Load from new.
+
+
 .globl swtch
 swtch:
         sd ra, 0(a0)

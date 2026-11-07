@@ -1,5 +1,7 @@
 #!/usr/bin/perl -w
 
+# Generate usys.S, the stubs for syscalls.
+
 print "#include \"kernel/syscall.h\"\n";
 
 sub entry {
