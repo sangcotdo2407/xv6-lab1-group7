@@ -108,7 +108,8 @@ static int is_zero(void *p, int n) {
   return 1;
 }
 
-static void putu(uint64 v) {      // printf của xv6 không in được uint64 đầy đủ
+// xv6 printf cannot print the full 64-bit scheduling counter.
+static void putu(uint64 v) {
   char buf[21];
   int i = 0;
   if(v == 0) buf[i++] = '0';
