@@ -1,8 +1,0 @@
-
-xv6 kernel is booting
-
-hart 1 starting
-hart 2 starting
-FILE_INFO_KERNEL ALL PASSED
-init: starting sh
-$
